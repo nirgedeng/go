@@ -10,7 +10,7 @@ import (
 )
 
 //go:linkname plugin_lastmoduleinit plugin.lastmoduleinit
-func plugin_lastmoduleinit() (path string, syms map[string]any, initTasks []*initTask, errstr string) {
+func plugin_lastmoduleinit(hashchecker func(modulename, linktimehash, runtimehash string) bool) (path string, syms map[string]any, initTasks []*initTask, errstr string) {
 	var md *moduledata
 	for pmd := firstmoduledata.next; pmd != nil; pmd = pmd.next {
 		if pmd.bad {
@@ -51,8 +51,15 @@ func plugin_lastmoduleinit() (path string, syms map[string]any, initTasks []*ini
 			throw("plugin: new module data overlaps with previous moduledata")
 		}
 	}
+	check := func(modulename, linktimehash, runtimehash string) bool {
+		if hashchecker == nil {
+			return linktimehash == runtimehash
+		} else {
+			return hashchecker(modulename, linktimehash, runtimehash)
+		}
+	}
 	for _, pkghash := range md.pkghashes {
-		if pkghash.linktimehash != *pkghash.runtimehash {
+		if !check(pkghash.modulename, pkghash.linktimehash, *pkghash.runtimehash) {
 			md.bad = true
 			return "", nil, nil, "plugin was built with a different version of package " + pkghash.modulename
 		}
