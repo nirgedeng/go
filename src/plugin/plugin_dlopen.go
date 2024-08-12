@@ -39,7 +39,7 @@ import (
 	"unsafe"
 )
 
-func open(name string) (*Plugin, error) {
+func open(name string, hashchecker HashCheckerFunc) (*Plugin, error) {
 	cPath := make([]byte, C.PATH_MAX+1)
 	cRelName := make([]byte, len(name)+1)
 	copy(cRelName, name)
@@ -74,7 +74,7 @@ func open(name string) (*Plugin, error) {
 	if plugins == nil {
 		plugins = make(map[string]*Plugin)
 	}
-	pluginpath, syms, initTasks, errstr := lastmoduleinit()
+	pluginpath, syms, initTasks, errstr := lastmoduleinit(hashchecker)
 	if errstr != "" {
 		plugins[filepath] = &Plugin{
 			pluginpath: pluginpath,
@@ -140,7 +140,7 @@ var (
 )
 
 // lastmoduleinit is defined in package runtime.
-func lastmoduleinit() (pluginpath string, syms map[string]any, inittasks []*initTask, errstr string)
+func lastmoduleinit(hashchecker HashCheckerFunc) (pluginpath string, syms map[string]any, inittasks []*initTask, errstr string)
 
 // doInit is defined in package runtime.
 //
