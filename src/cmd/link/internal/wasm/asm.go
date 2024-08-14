@@ -68,11 +68,13 @@ func readWasmImport(ldr *loader.Loader, s loader.Sym) obj.WasmImport {
 var wasmFuncTypes = map[string]*wasmFuncType{
 	"_rt0_wasm_js":            {Params: []byte{}},                                         //
 	"_rt0_wasm_wasip1":        {Params: []byte{}},                                         //
+	"_rt0_wasm_wasip1_lib":    {Params: []byte{}},                                         //
 	"wasm_export__start":      {},                                                         //
 	"wasm_export_run":         {Params: []byte{I32, I32}},                                 // argc, argv
 	"wasm_export_resume":      {Params: []byte{}},                                         //
 	"wasm_export_getsp":       {Results: []byte{I32}},                                     // sp
 	"wasm_pc_f_loop":          {Params: []byte{}},                                         //
+	"wasm_pc_f_loop_export":   {Params: []byte{I32}},                                      // pc_f
 	"runtime.wasmDiv":         {Params: []byte{I64, I64}, Results: []byte{I64}},           // x, y -> x/y
 	"runtime.wasmTruncS":      {Params: []byte{F64}, Results: []byte{I64}},                // x -> int(x)
 	"runtime.wasmTruncU":      {Params: []byte{F64}, Results: []byte{I64}},                // x -> uint(x)
@@ -417,9 +419,21 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 	switch buildcfg.GOOS {
 	case "wasip1":
 		writeUleb128(ctxt.Out, uint64(2+len(ldr.WasmExports))) // number of exports
-		s := ldr.Lookup("_rt0_wasm_wasip1", 0)
+		var entry, entryExpName string
+		switch ctxt.BuildMode {
+		case ld.BuildModeExe:
+			entry = "_rt0_wasm_wasip1"
+			entryExpName = "_start"
+		case ld.BuildModeCShared:
+			entry = "_rt0_wasm_wasip1_lib"
+			entryExpName = "_initialize"
+		}
+		s := ldr.Lookup(entry, 0)
+		if s == 0 {
+			ld.Errorf(nil, "export symbol %s not defined", entry)
+		}
 		idx := uint32(lenHostImports) + uint32(ldr.SymValue(s)>>16) - funcValueOffset
-		writeName(ctxt.Out, "_start")       // the wasi entrypoint
+		writeName(ctxt.Out, entryExpName)   // the wasi entrypoint
 		ctxt.Out.WriteByte(0x00)            // func export
 		writeUleb128(ctxt.Out, uint64(idx)) // funcidx
 		for _, s := range ldr.WasmExports {
@@ -435,6 +449,9 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 		writeUleb128(ctxt.Out, 4) // number of exports
 		for _, name := range []string{"run", "resume", "getsp"} {
 			s := ldr.Lookup("wasm_export_"+name, 0)
+			if s == 0 {
+				ld.Errorf(nil, "export symbol %s not defined", "wasm_export_"+name)
+			}
 			idx := uint32(lenHostImports) + uint32(ldr.SymValue(s)>>16) - funcValueOffset
 			writeName(ctxt.Out, name)           // inst.exports.run/resume/getsp in wasm_exec.js
 			ctxt.Out.WriteByte(0x00)            // func export
