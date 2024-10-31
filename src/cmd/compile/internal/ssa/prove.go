@@ -341,6 +341,42 @@ func (l limit) exp2(b uint) limit {
 	return r
 }
 
+// Similar to add, but computes the complement of the limit for bitsize b.
+func (l limit) com(b uint) limit {
+	switch b {
+	case 64:
+		return limit{
+			min:  ^l.max,
+			max:  ^l.min,
+			umin: ^l.umax,
+			umax: ^l.umin,
+		}
+	case 32:
+		return limit{
+			min:  int64(^int32(l.max)),
+			max:  int64(^int32(l.min)),
+			umin: uint64(^uint32(l.umax)),
+			umax: uint64(^uint32(l.umin)),
+		}
+	case 16:
+		return limit{
+			min:  int64(^int16(l.max)),
+			max:  int64(^int16(l.min)),
+			umin: uint64(^uint16(l.umax)),
+			umax: uint64(^uint16(l.umin)),
+		}
+	case 8:
+		return limit{
+			min:  int64(^int8(l.max)),
+			max:  int64(^int8(l.min)),
+			umin: uint64(^uint8(l.umax)),
+			umax: uint64(^uint8(l.umin)),
+		}
+	default:
+		panic("unreachable")
+	}
+}
+
 var noLimit = limit{math.MinInt64, math.MaxInt64, 0, math.MaxUint64}
 
 // a limitFact is a limit known for a particular value.
@@ -618,7 +654,7 @@ func (ft *factsTable) newLimit(v *Value, newLim limit) bool {
 	// extract relation between its args. For example, if
 	// We learn v is false, and v is defined as a<b, then we learn a>=b.
 	if v.Type.IsBoolean() {
-		// If we reach here, is is because we have a more restrictive
+		// If we reach here, it is because we have a more restrictive
 		// value for v than the default. The only two such values
 		// are constant true or constant false.
 		if lim.min != lim.max {
@@ -1643,43 +1679,80 @@ func (ft *factsTable) flowLimit(v *Value) bool {
 	case OpSignExt8to64, OpSignExt8to32, OpSignExt8to16, OpSignExt16to64, OpSignExt16to32, OpSignExt32to64:
 		a := ft.limits[v.Args[0].ID]
 		return ft.signedMinMax(v, a.min, a.max)
+	case OpTrunc64to8, OpTrunc64to16, OpTrunc64to32, OpTrunc32to8, OpTrunc32to16, OpTrunc16to8:
+		a := ft.limits[v.Args[0].ID]
+		if a.umax <= 1<<(uint64(v.Type.Size())*8)-1 {
+			return ft.unsignedMinMax(v, a.umin, a.umax)
+		}
 
 	// math/bits
 	case OpCtz64:
 		a := ft.limits[v.Args[0].ID]
 		if a.nonzero() {
-			return ft.unsignedMax(v, 63)
+			return ft.unsignedMax(v, uint64(bits.Len64(a.umax)-1))
 		}
 	case OpCtz32:
 		a := ft.limits[v.Args[0].ID]
 		if a.nonzero() {
-			return ft.unsignedMax(v, 31)
+			return ft.unsignedMax(v, uint64(bits.Len32(uint32(a.umax))-1))
 		}
 	case OpCtz16:
 		a := ft.limits[v.Args[0].ID]
 		if a.nonzero() {
-			return ft.unsignedMax(v, 15)
+			return ft.unsignedMax(v, uint64(bits.Len16(uint16(a.umax))-1))
 		}
 	case OpCtz8:
 		a := ft.limits[v.Args[0].ID]
 		if a.nonzero() {
-			return ft.unsignedMax(v, 7)
+			return ft.unsignedMax(v, uint64(bits.Len8(uint8(a.umax))-1))
 		}
 
+	case OpBitLen64:
+		a := ft.limits[v.Args[0].ID]
+		return ft.unsignedMinMax(v,
+			uint64(bits.Len64(a.umin)),
+			uint64(bits.Len64(a.umax)))
+	case OpBitLen32:
+		a := ft.limits[v.Args[0].ID]
+		return ft.unsignedMinMax(v,
+			uint64(bits.Len32(uint32(a.umin))),
+			uint64(bits.Len32(uint32(a.umax))))
+	case OpBitLen16:
+		a := ft.limits[v.Args[0].ID]
+		return ft.unsignedMinMax(v,
+			uint64(bits.Len16(uint16(a.umin))),
+			uint64(bits.Len16(uint16(a.umax))))
+	case OpBitLen8:
+		a := ft.limits[v.Args[0].ID]
+		return ft.unsignedMinMax(v,
+			uint64(bits.Len8(uint8(a.umin))),
+			uint64(bits.Len8(uint8(a.umax))))
+
 	// Masks.
+
+	// TODO: if y.umax and y.umin share a leading bit pattern, y also has that leading bit pattern.
+	// we could compare the patterns of always set bits in a and b and learn more about minimum and maximum.
+	// But I doubt this help any real world code.
 	case OpAnd64, OpAnd32, OpAnd16, OpAnd8:
 		// AND can only make the value smaller.
 		a := ft.limits[v.Args[0].ID]
 		b := ft.limits[v.Args[1].ID]
-		return ft.unsignedMax(v, minU(a.umax, b.umax))
+		return ft.unsignedMax(v, min(a.umax, b.umax))
 	case OpOr64, OpOr32, OpOr16, OpOr8:
-		// OR can only make the value bigger.
+		// OR can only make the value bigger and can't flip bits proved to be zero in both inputs.
 		a := ft.limits[v.Args[0].ID]
 		b := ft.limits[v.Args[1].ID]
-		return ft.unsignedMin(v, maxU(a.umin, b.umin))
+		return ft.unsignedMinMax(v,
+			max(a.umin, b.umin),
+			1<<bits.Len64(a.umax|b.umax)-1)
 	case OpXor64, OpXor32, OpXor16, OpXor8:
-		// TODO: use leading/trailing zeroes?
-		// Not sure if it is worth it.
+		// XOR can't flip bits that are proved to be zero in both inputs.
+		a := ft.limits[v.Args[0].ID]
+		b := ft.limits[v.Args[1].ID]
+		return ft.unsignedMax(v, 1<<bits.Len64(a.umax|b.umax)-1)
+	case OpCom64, OpCom32, OpCom16, OpCom8:
+		a := ft.limits[v.Args[0].ID]
+		return ft.newLimit(v, a.com(uint(v.Type.Size())*8))
 
 	// Arithmetic.
 	case OpAdd64:
@@ -1714,6 +1787,10 @@ func (ft *factsTable) flowLimit(v *Value) bool {
 		a := ft.limits[v.Args[0].ID]
 		b := ft.limits[v.Args[1].ID]
 		return ft.newLimit(v, a.sub(b, 8))
+	case OpNeg64, OpNeg32, OpNeg16, OpNeg8:
+		a := ft.limits[v.Args[0].ID]
+		bitsize := uint(v.Type.Size()) * 8
+		return ft.newLimit(v, a.com(bitsize).add(limit{min: 1, max: 1, umin: 1, umax: 1}, bitsize))
 	case OpMul64:
 		a := ft.limits[v.Args[0].ID]
 		b := ft.limits[v.Args[1].ID]
@@ -1746,6 +1823,38 @@ func (ft *factsTable) flowLimit(v *Value) bool {
 		a := ft.limits[v.Args[0].ID]
 		b := ft.limits[v.Args[1].ID]
 		return ft.newLimit(v, a.mul(b.exp2(8), 8))
+	case OpMod64, OpMod32, OpMod16, OpMod8:
+		a := ft.limits[v.Args[0].ID]
+		b := ft.limits[v.Args[1].ID]
+		if !(a.nonnegative() && b.nonnegative()) {
+			// TODO: we could handle signed limits but I didn't bother.
+			break
+		}
+		fallthrough
+	case OpMod64u, OpMod32u, OpMod16u, OpMod8u:
+		a := ft.limits[v.Args[0].ID]
+		b := ft.limits[v.Args[1].ID]
+		// Underflow in the arithmetic below is ok, it gives to MaxUint64 which does nothing to the limit.
+		return ft.unsignedMax(v, min(a.umax, b.umax-1))
+	case OpDiv64, OpDiv32, OpDiv16, OpDiv8:
+		a := ft.limits[v.Args[0].ID]
+		b := ft.limits[v.Args[1].ID]
+		if !(a.nonnegative() && b.nonnegative()) {
+			// TODO: we could handle signed limits but I didn't bother.
+			break
+		}
+		fallthrough
+	case OpDiv64u, OpDiv32u, OpDiv16u, OpDiv8u:
+		a := ft.limits[v.Args[0].ID]
+		b := ft.limits[v.Args[1].ID]
+		lim := noLimit
+		if b.umax > 0 {
+			lim = lim.unsignedMin(a.umin / b.umax)
+		}
+		if b.umin > 0 {
+			lim = lim.unsignedMax(a.umax / b.umin)
+		}
+		return ft.newLimit(v, lim)
 
 	case OpPhi:
 		// Compute the union of all the input phis.
@@ -1762,12 +1871,11 @@ func (ft *factsTable) flowLimit(v *Value) bool {
 			l2 := ft.limits[a.ID]
 			l.min = min(l.min, l2.min)
 			l.max = max(l.max, l2.max)
-			l.umin = minU(l.umin, l2.umin)
-			l.umax = maxU(l.umax, l2.umax)
+			l.umin = min(l.umin, l2.umin)
+			l.umax = max(l.umax, l2.umax)
 		}
 		return ft.newLimit(v, l)
 	}
-	// TODO: mul/lsh, rsh, div/mod, and/or/xor
 	return false
 }
 
@@ -1881,6 +1989,8 @@ func addLocalFacts(ft *factsTable, b *Block) {
 
 	// Add facts about individual operations.
 	for _, v := range b.Values {
+		// FIXME(go.dev/issue/68857): this loop only set up limits properly when b.Values is in topological order.
+		// flowLimit can also depend on limits given by this loop which right now is not handled.
 		switch v.Op {
 		case OpAnd64, OpAnd32, OpAnd16, OpAnd8:
 			ft.update(b, v, v.Args[0], unsigned, lt|eq)
@@ -1916,8 +2026,85 @@ func addLocalFacts(ft *factsTable, b *Block) {
 			if v.Args[0].Op == OpSliceMake {
 				ft.update(b, v, v.Args[0].Args[2], signed, eq)
 			}
+		case OpPhi:
+			addLocalFactsPhi(ft, v)
 		}
 	}
+}
+
+func addLocalFactsPhi(ft *factsTable, v *Value) {
+	// Look for phis that implement min/max.
+	//   z:
+	//      c = Less64 x y (or other Less/Leq operation)
+	//      If c -> bx by
+	//   bx: <- z
+	//       -> b ...
+	//   by: <- z
+	//      -> b ...
+	//   b: <- bx by
+	//      v = Phi x y
+	// Then v is either min or max of x,y.
+	// If it is the min, then we deduce v <= x && v <= y.
+	// If it is the max, then we deduce v >= x && v >= y.
+	// The min case is useful for the copy builtin, see issue 16833.
+	if len(v.Args) != 2 {
+		return
+	}
+	b := v.Block
+	x := v.Args[0]
+	y := v.Args[1]
+	bx := b.Preds[0].b
+	by := b.Preds[1].b
+	var z *Block // branch point
+	switch {
+	case bx == by: // bx == by == z case
+		z = bx
+	case by.uniquePred() == bx: // bx == z case
+		z = bx
+	case bx.uniquePred() == by: // by == z case
+		z = by
+	case bx.uniquePred() == by.uniquePred():
+		z = bx.uniquePred()
+	}
+	if z == nil || z.Kind != BlockIf {
+		return
+	}
+	c := z.Controls[0]
+	if len(c.Args) != 2 {
+		return
+	}
+	var isMin bool // if c, a less-than comparison, is true, phi chooses x.
+	if bx == z {
+		isMin = b.Preds[0].i == 0
+	} else {
+		isMin = bx.Preds[0].i == 0
+	}
+	if c.Args[0] == x && c.Args[1] == y {
+		// ok
+	} else if c.Args[0] == y && c.Args[1] == x {
+		// Comparison is reversed from how the values are listed in the Phi.
+		isMin = !isMin
+	} else {
+		// Not comparing x and y.
+		return
+	}
+	var dom domain
+	switch c.Op {
+	case OpLess64, OpLess32, OpLess16, OpLess8, OpLeq64, OpLeq32, OpLeq16, OpLeq8:
+		dom = signed
+	case OpLess64U, OpLess32U, OpLess16U, OpLess8U, OpLeq64U, OpLeq32U, OpLeq16U, OpLeq8U:
+		dom = unsigned
+	default:
+		return
+	}
+	var rel relation
+	if isMin {
+		rel = lt | eq
+	} else {
+		rel = gt | eq
+	}
+	ft.update(b, v, x, dom, rel)
+	ft.update(b, v, y, dom, rel)
 }
 
 var ctzNonZeroOp = map[Op]Op{OpCtz8: OpCtz8NonZero, OpCtz16: OpCtz16NonZero, OpCtz32: OpCtz32NonZero, OpCtz64: OpCtz64NonZero}

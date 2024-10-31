@@ -209,6 +209,17 @@ function returns void). For example:
 	_, err := C.voidFunc()
 	var n, err = C.sqrt(1)
 
+Note that the C errno value may be non-zero, and thus the err result may be
+non-nil, even if the function call is successful. Unlike normal Go conventions,
+you should first check whether the call succeeded before checking the error
+result. For example:
+
+	n, err := C.setenv(key, value, 1)
+	if n != 0 {
+		// we know the call failed, so it is now valid to use err
+		return err
+	}
+
 Calling C function pointers is currently not supported, however you can
 declare Go variables which hold C function pointers and pass them
 back and forth between Go and C. C code may call function pointers
@@ -425,6 +436,30 @@ passing uninitialized C memory to Go code if the Go code is going to
 store pointer values in it. Zero out the memory in C before passing it
 to Go.
 
+# Optimizing calls of C code
+
+When passing a Go pointer to a C function the compiler normally ensures
+that the Go object lives on the heap. If the C function does not keep
+a copy of the Go pointer, and never passes the Go pointer back to Go code,
+then this is unnecessary. The #cgo noescape directive may be used to tell
+the compiler that no Go pointers escape via the named C function.
+If the noescape directive is used and the C function does not handle the
+pointer safely, the program may crash or see memory corruption.
+
+For example:
+
+	// #cgo noescape cFunctionName
+
+When a Go function calls a C function, it prepares for the C function to
+call back to a Go function. The #cgo nocallback directive may be used to
+tell the compiler that these preparations are not necessary.
+If the nocallback directive is used and the C function does call back into
+Go code, the program will panic.
+
+For example:
+
+	// #cgo nocallback cFunctionName
+
 # Special cases
 
 A few special C types which would normally be represented by a pointer
@@ -510,15 +545,6 @@ The following options are available when running cgo directly:
 		If there are any exported functions, write the
 		generated export declarations to file.
 		C code can #include this to see the declarations.
-	-importpath string
-		The import path for the Go package. Optional; used for
-		nicer comments in the generated files.
-	-import_runtime_cgo
-		If set (which it is by default) import runtime/cgo in
-		generated output.
-	-import_syscall
-		If set (which it is by default) import syscall in
-		generated output.
 	-gccgo
 		Generate output for the gccgo compiler rather than the
 		gc compiler.
@@ -533,12 +559,25 @@ The following options are available when running cgo directly:
 		Write out input file in Go syntax replacing C package
 		names with real values. Used to generate files in the
 		syscall package when bootstrapping a new target.
+	-importpath string
+		The import path for the Go package. Optional; used for
+		nicer comments in the generated files.
+	-import_runtime_cgo
+		If set (which it is by default) import runtime/cgo in
+		generated output.
+	-import_syscall
+		If set (which it is by default) import syscall in
+		generated output.
 	-ldflags flags
 		Flags to pass to the C linker. The cmd/go tool uses
 		this to pass in the flags in the CGO_LDFLAGS variable.
 	-objdir directory
 		Put all generated files in directory.
 	-srcdir directory
+		Find the Go input files, listed on the command line,
+		in directory.
+	-trimpath rewrites
+		Apply trims and rewrites to source file paths.
 */
 package main
 

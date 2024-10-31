@@ -385,6 +385,10 @@ const (
 	AMOVVF
 	AMOVVD
 
+	// 2.2.1.8
+	AORN
+	AANDN
+
 	// 2.2.7. Atomic Memory Access Instructions
 	AAMSWAPB
 	AAMSWAPH
@@ -435,6 +439,14 @@ const (
 	AAMMINDBWU
 	AAMMINDBVU
 
+	// 2.2.3.8
+	ABSTRINSW
+	ABSTRINSV
+
+	// 2.2.3.9
+	ABSTRPICKW
+	ABSTRPICKV
+
 	// 2.2.10. Other Miscellaneous Instructions
 	ARDTIMELW
 	ARDTIMEHW
@@ -450,6 +462,10 @@ const (
 	// 3.2.1.7
 	AFCOPYSGF
 	AFCOPYSGD
+	AFSCALEBF
+	AFSCALEBD
+	AFLOGBF
+	AFLOGBD
 
 	// 3.2.1.8
 	AFCLASSF

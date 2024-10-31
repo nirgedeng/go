@@ -6,6 +6,7 @@ package runtime_test
 
 import (
 	"fmt"
+	"internal/asan"
 	"math/bits"
 	"math/rand"
 	"os"
@@ -208,6 +209,9 @@ func TestGcZombieReporting(t *testing.T) {
 }
 
 func TestGCTestMoveStackOnNextCall(t *testing.T) {
+	if asan.Enabled {
+		t.Skip("extra allocations with -asan causes this to fail; see #70079")
+	}
 	t.Parallel()
 	var onStack int
 	// GCTestMoveStackOnNextCall can fail in rare cases if there's
@@ -298,6 +302,9 @@ var pointerClassBSS *int
 var pointerClassData = 42
 
 func TestGCTestPointerClass(t *testing.T) {
+	if asan.Enabled {
+		t.Skip("extra allocations cause this test to fail; see #70079")
+	}
 	t.Parallel()
 	check := func(p unsafe.Pointer, want string) {
 		t.Helper()
@@ -734,7 +741,7 @@ func BenchmarkMSpanCountAlloc(b *testing.B) {
 	// always rounded up 8 bytes.
 	for _, n := range []int{8, 16, 32, 64, 128} {
 		b.Run(fmt.Sprintf("bits=%d", n*8), func(b *testing.B) {
-			// Initialize a new byte slice with pseduo-random data.
+			// Initialize a new byte slice with pseudo-random data.
 			bits := make([]byte, n)
 			rand.Read(bits)
 

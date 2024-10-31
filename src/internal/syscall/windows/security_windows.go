@@ -156,3 +156,57 @@ type UserInfo4 struct {
 //
 //go:linkname GetSystemDirectory
 func GetSystemDirectory() string // Implemented in runtime package.
+
+// GetUserName retrieves the user name of the current thread
+// in the specified format.
+func GetUserName(format uint32) (string, error) {
+	n := uint32(50)
+	for {
+		b := make([]uint16, n)
+		e := syscall.GetUserNameEx(format, &b[0], &n)
+		if e == nil {
+			return syscall.UTF16ToString(b[:n]), nil
+		}
+		if e != syscall.ERROR_MORE_DATA {
+			return "", e
+		}
+		if n <= uint32(len(b)) {
+			return "", e
+		}
+	}
+}
+
+// getTokenInfo retrieves a specified type of information about an access token.
+func getTokenInfo(t syscall.Token, class uint32, initSize int) (unsafe.Pointer, error) {
+	n := uint32(initSize)
+	for {
+		b := make([]byte, n)
+		e := syscall.GetTokenInformation(t, class, &b[0], uint32(len(b)), &n)
+		if e == nil {
+			return unsafe.Pointer(&b[0]), nil
+		}
+		if e != syscall.ERROR_INSUFFICIENT_BUFFER {
+			return nil, e
+		}
+		if n <= uint32(len(b)) {
+			return nil, e
+		}
+	}
+}
+
+type TOKEN_GROUPS struct {
+	GroupCount uint32
+	Groups     [1]SID_AND_ATTRIBUTES
+}
+
+func (g *TOKEN_GROUPS) AllGroups() []SID_AND_ATTRIBUTES {
+	return (*[(1 << 28) - 1]SID_AND_ATTRIBUTES)(unsafe.Pointer(&g.Groups[0]))[:g.GroupCount:g.GroupCount]
+}
+
+func GetTokenGroups(t syscall.Token) (*TOKEN_GROUPS, error) {
+	i, e := getTokenInfo(t, syscall.TokenGroups, 50)
+	if e != nil {
+		return nil, e
+	}
+	return (*TOKEN_GROUPS)(i), nil
+}

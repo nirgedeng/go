@@ -32,28 +32,8 @@ var winreadlinkvolume = godebug.New("winreadlinkvolume")
 // For TestRawConnReadWrite.
 type syscallDescriptor = syscall.Handle
 
-// chdir changes the current working directory to the named directory,
-// and then restore the original working directory at the end of the test.
-func chdir(t *testing.T, dir string) {
-	olddir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir %s: %v", dir, err)
-	}
-
-	t.Cleanup(func() {
-		if err := os.Chdir(olddir); err != nil {
-			t.Errorf("chdir to original working directory %s: %v", olddir, err)
-			os.Exit(1)
-		}
-	})
-}
-
 func TestSameWindowsFile(t *testing.T) {
-	temp := t.TempDir()
-	chdir(t, temp)
+	t.Chdir(t.TempDir())
 
 	f, err := os.Create("a")
 	if err != nil {
@@ -99,7 +79,7 @@ type dirLinkTest struct {
 
 func testDirLinks(t *testing.T, tests []dirLinkTest) {
 	tmpdir := t.TempDir()
-	chdir(t, tmpdir)
+	t.Chdir(tmpdir)
 
 	dir := filepath.Join(tmpdir, "dir")
 	err := os.Mkdir(dir, 0777)
@@ -458,7 +438,7 @@ func TestNetworkSymbolicLink(t *testing.T) {
 	const _NERR_ServerNotStarted = syscall.Errno(2114)
 
 	dir := t.TempDir()
-	chdir(t, dir)
+	t.Chdir(dir)
 
 	pid := os.Getpid()
 	shareName := fmt.Sprintf("GoSymbolicLinkTestShare%d", pid)
@@ -561,8 +541,7 @@ func TestStatLxSymLink(t *testing.T) {
 		t.Skip("skipping: WSL not detected")
 	}
 
-	temp := t.TempDir()
-	chdir(t, temp)
+	t.Chdir(t.TempDir())
 
 	const target = "target"
 	const link = "link"
@@ -629,7 +608,7 @@ func TestBadNetPathError(t *testing.T) {
 }
 
 func TestStatDir(t *testing.T) {
-	defer chtmpdir(t)()
+	t.Chdir(t.TempDir())
 
 	f, err := os.Open(".")
 	if err != nil {
@@ -659,7 +638,7 @@ func TestStatDir(t *testing.T) {
 
 func TestOpenVolumeName(t *testing.T) {
 	tmpdir := t.TempDir()
-	chdir(t, tmpdir)
+	t.Chdir(tmpdir)
 
 	want := []string{"file1", "file2", "file3", "gopher.txt"}
 	slices.Sort(want)
@@ -1011,6 +990,8 @@ func TestFileStatNUL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer f.Close()
+
 	fi, err := f.Stat()
 	if err != nil {
 		t.Fatal(err)
@@ -1036,8 +1017,8 @@ func TestStatNUL(t *testing.T) {
 // works on Windows when developer mode is active.
 // This is supported starting Windows 10 (1703, v10.0.14972).
 func TestSymlinkCreation(t *testing.T) {
-	if !testenv.HasSymlink() && !isWindowsDeveloperModeActive() {
-		t.Skip("Windows developer mode is not active")
+	if !testenv.HasSymlink() {
+		t.Skip("skipping test; no symlink support")
 	}
 	t.Parallel()
 
@@ -1051,23 +1032,6 @@ func TestSymlinkCreation(t *testing.T) {
 	if err := os.Symlink(dummyFile, linkFile); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// isWindowsDeveloperModeActive checks whether or not the developer mode is active on Windows 10.
-// Returns false for prior Windows versions.
-// see https://docs.microsoft.com/en-us/windows/uwp/get-started/enable-your-device-for-development
-func isWindowsDeveloperModeActive() bool {
-	key, err := registry.OpenKey(registry.LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock", registry.READ)
-	if err != nil {
-		return false
-	}
-
-	val, _, err := key.GetIntegerValue("AllowDevelopmentWithoutDevLicense")
-	if err != nil {
-		return false
-	}
-
-	return val != 0
 }
 
 // TestRootRelativeDirSymlink verifies that symlinks to paths relative to the
@@ -1129,14 +1093,7 @@ func TestWorkingDirectoryRelativeSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := os.Chdir(oldwd); err != nil {
-			t.Fatal(err)
-		}
-	}()
-	if err := os.Chdir(temp); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(temp)
 	t.Logf("Chdir(%#q)", temp)
 
 	wdRelDir := filepath.VolumeName(temp) + `dir\sub` // no backslash after volume.
@@ -1221,10 +1178,7 @@ func TestRootDirAsTemp(t *testing.T) {
 	testenv.MustHaveExec(t)
 	t.Parallel()
 
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	exe := testenv.Executable(t)
 
 	newtmp, err := findUnusedDriveLetter()
 	if err != nil {
@@ -1300,6 +1254,9 @@ func TestReadlink(t *testing.T) {
 		}
 
 		t.Run(name, func(t *testing.T) {
+			if !tt.junction {
+				testenv.MustHaveSymlink(t)
+			}
 			if !tt.relative {
 				t.Parallel()
 			}
@@ -1327,7 +1284,7 @@ func TestReadlink(t *testing.T) {
 				} else {
 					want = relTarget
 				}
-				chdir(t, tmpdir)
+				t.Chdir(tmpdir)
 				link = filepath.Base(link)
 				target = relTarget
 			} else {
@@ -1602,5 +1559,78 @@ func TestReadDirNoFileID(t *testing.T) {
 	}
 	if !os.SameFile(f2, f2s) {
 		t.Errorf("SameFile(%v, %v) = false; want true", f2, f2s)
+	}
+}
+
+func TestOpen_InvalidPath(t *testing.T) {
+	dir := t.TempDir()
+
+	file, err := os.Open(dir + ".")
+	if err != nil {
+		t.Errorf("Open(%q) should have succeeded, got %v", dir+".", err)
+	} else {
+		file.Close()
+	}
+
+	file, err = os.Open(dir + " ")
+	if err != nil {
+		t.Errorf("Open(%q) should have succeeded, got %v", dir+" ", err)
+	} else {
+		file.Close()
+	}
+}
+
+func TestMkdirAll_InvalidPath(t *testing.T) {
+	// Parent folder contains traling spaces
+	path := `C:\temp\folder \this one fails`
+	err := os.MkdirAll(path, 0644)
+	if err == nil {
+		t.Errorf("MkdirAll(%q) should have failed", path)
+	} else if !strings.Contains(err.Error(), "invalid path: cannot end with a space or period") {
+		t.Errorf("expected errInvalidPath for path %q, got %v", path, err)
+	}
+}
+
+func TestCreate_InvalidPath(t *testing.T) {
+	testInvalidPath(t, func(_, path string) error {
+		_, err := os.Create(path)
+		return err
+	})
+}
+
+func TestMkdir_InvalidPath(t *testing.T) {
+	testInvalidPath(t, func(_, path string) error {
+		return os.Mkdir(path, 0644)
+	})
+}
+
+func TestRename_InvalidPath(t *testing.T) {
+	testInvalidPath(t, os.Rename)
+}
+
+func TestLink_InvalidPath(t *testing.T) {
+	testInvalidPath(t, os.Link)
+}
+
+func TestSymlink_InvalidPath(t *testing.T) {
+	testInvalidPath(t, os.Symlink)
+}
+
+func testInvalidPath(t *testing.T, fn func(src, dest string) error) {
+	dir := t.TempDir()
+
+	// Test invalid paths (with trailing space and period)
+	invalidPaths := []string{
+		filepath.Join(dir, "invalid_dir "), // path ending in space
+		filepath.Join(dir, "invalid_dir."), // path ending in period
+	}
+
+	for _, path := range invalidPaths {
+		err := fn(dir, path)
+		if err == nil {
+			t.Errorf("(%q, %q) should have failed", dir, path)
+		} else if !strings.Contains(err.Error(), "invalid path: cannot end with a space or period") {
+			t.Errorf("expected errInvalidPath for path %q, got %v", path, err)
+		}
 	}
 }

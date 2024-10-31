@@ -285,6 +285,12 @@ var genericOps = []opData{
 	{name: "Abs", argLength: 1},      // absolute value arg0
 	{name: "Copysign", argLength: 2}, // copy sign from arg0 to arg1
 
+	// Integer min/max implementation, if hardware is available.
+	{name: "Min64", argLength: 2},  // min(arg0,arg1), signed
+	{name: "Max64", argLength: 2},  // max(arg0,arg1), signed
+	{name: "Min64u", argLength: 2}, // min(arg0,arg1), unsigned
+	{name: "Max64u", argLength: 2}, // max(arg0,arg1), unsigned
+
 	// Float min/max implementation, if hardware is available.
 	{name: "Min64F", argLength: 2}, // min(arg0,arg1)
 	{name: "Min32F", argLength: 2}, // min(arg0,arg1)
@@ -482,8 +488,8 @@ var genericOps = []opData{
 	// Pseudo-ops
 	{name: "GetG", argLength: 1, zeroWidth: true}, // runtime.getg() (read g pointer). arg0=mem
 	{name: "GetClosurePtr"},                       // get closure pointer from dedicated register
-	{name: "GetCallerPC"},                         // for getcallerpc intrinsic
-	{name: "GetCallerSP", argLength: 1},           // for getcallersp intrinsic. arg0=mem.
+	{name: "GetCallerPC"},                         // for GetCallerPC intrinsic
+	{name: "GetCallerSP", argLength: 1},           // for GetCallerSP intrinsic. arg0=mem.
 
 	// Indexing operations
 	{name: "PtrIndex", argLength: 2},             // arg0=ptr, arg1=index. Computes ptr+sizeof(*v.type)*index, where index is extended to ptrwidth type
@@ -515,11 +521,7 @@ var genericOps = []opData{
 	{name: "IData", argLength: 1},                // arg0=interface, returns data field
 
 	// Structs
-	{name: "StructMake0"},                              // Returns struct with 0 fields.
-	{name: "StructMake1", argLength: 1},                // arg0=field0.  Returns struct.
-	{name: "StructMake2", argLength: 2},                // arg0,arg1=field0,field1.  Returns struct.
-	{name: "StructMake3", argLength: 3},                // arg0..2=field0..2.  Returns struct.
-	{name: "StructMake4", argLength: 4},                // arg0..3=field0..3.  Returns struct.
+	{name: "StructMake", argLength: -1},                // args...=field0..n-1. Returns struct with n fields.
 	{name: "StructSelect", argLength: 1, aux: "Int64"}, // arg0=struct, auxint=field index.  Returns the auxint'th field.
 
 	// Arrays
@@ -602,6 +604,7 @@ var genericOps = []opData{
 	{name: "AtomicStorePtrNoWB", argLength: 3, typ: "Mem", hasSideEffects: true},               // Store arg1 to *arg0.  arg2=memory.  Returns memory.
 	{name: "AtomicStoreRel32", argLength: 3, typ: "Mem", hasSideEffects: true},                 // Store arg1 to *arg0.  arg2=memory.  Lock release, returns memory.
 	{name: "AtomicStoreRel64", argLength: 3, typ: "Mem", hasSideEffects: true},                 // Store arg1 to *arg0.  arg2=memory.  Lock release, returns memory.
+	{name: "AtomicExchange8", argLength: 3, typ: "(UInt8,Mem)", hasSideEffects: true},          // Store arg1 to *arg0.  arg2=memory.  Returns old contents of *arg0 and new memory.
 	{name: "AtomicExchange32", argLength: 3, typ: "(UInt32,Mem)", hasSideEffects: true},        // Store arg1 to *arg0.  arg2=memory.  Returns old contents of *arg0 and new memory.
 	{name: "AtomicExchange64", argLength: 3, typ: "(UInt64,Mem)", hasSideEffects: true},        // Store arg1 to *arg0.  arg2=memory.  Returns old contents of *arg0 and new memory.
 	{name: "AtomicAdd32", argLength: 3, typ: "(UInt32,Mem)", hasSideEffects: true},             // Do *arg0 += arg1.  arg2=memory.  Returns sum and new memory.
@@ -627,11 +630,12 @@ var genericOps = []opData{
 	// Atomic operation variants
 	// These variants have the same semantics as above atomic operations.
 	// But they are used for generating more efficient code on certain modern machines, with run-time CPU feature detection.
-	// On ARM64, these are used when the LSE hardware feature is avaliable (either known at compile time or detected at runtime). If LSE is not avaliable,
+	// On ARM64, these are used when the LSE hardware feature is available (either known at compile time or detected at runtime). If LSE is not available,
 	// then the basic atomic oprations are used instead.
 	// These are not currently used on any other platform.
 	{name: "AtomicAdd32Variant", argLength: 3, typ: "(UInt32,Mem)", hasSideEffects: true},          // Do *arg0 += arg1.  arg2=memory.  Returns sum and new memory.
 	{name: "AtomicAdd64Variant", argLength: 3, typ: "(UInt64,Mem)", hasSideEffects: true},          // Do *arg0 += arg1.  arg2=memory.  Returns sum and new memory.
+	{name: "AtomicExchange8Variant", argLength: 3, typ: "(UInt8,Mem)", hasSideEffects: true},       // Store arg1 to *arg0.  arg2=memory.  Returns old contents of *arg0 and new memory.
 	{name: "AtomicExchange32Variant", argLength: 3, typ: "(UInt32,Mem)", hasSideEffects: true},     // Store arg1 to *arg0.  arg2=memory.  Returns old contents of *arg0 and new memory.
 	{name: "AtomicExchange64Variant", argLength: 3, typ: "(UInt64,Mem)", hasSideEffects: true},     // Store arg1 to *arg0.  arg2=memory.  Returns old contents of *arg0 and new memory.
 	{name: "AtomicCompareAndSwap32Variant", argLength: 4, typ: "(Bool,Mem)", hasSideEffects: true}, // if *arg0==arg1, then set *arg0=arg2.  Returns true if store happens and new memory.

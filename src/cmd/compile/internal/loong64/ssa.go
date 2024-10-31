@@ -186,6 +186,21 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
 
+	case ssa.OpLOONG64BSTRPICKV,
+		ssa.OpLOONG64BSTRPICKW:
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_CONST
+		if v.Op == ssa.OpLOONG64BSTRPICKW {
+			p.From.Offset = v.AuxInt >> 5
+			p.AddRestSourceConst(v.AuxInt & 0x1f)
+		} else {
+			p.From.Offset = v.AuxInt >> 6
+			p.AddRestSourceConst(v.AuxInt & 0x3f)
+		}
+		p.Reg = v.Args[0].Reg()
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = v.Reg()
+
 	case ssa.OpLOONG64FMINF,
 		ssa.OpLOONG64FMIND,
 		ssa.OpLOONG64FMAXF,
@@ -334,6 +349,50 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		}
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
+
+	case ssa.OpLOONG64MOVBloadidx,
+		ssa.OpLOONG64MOVBUloadidx,
+		ssa.OpLOONG64MOVHloadidx,
+		ssa.OpLOONG64MOVHUloadidx,
+		ssa.OpLOONG64MOVWloadidx,
+		ssa.OpLOONG64MOVWUloadidx,
+		ssa.OpLOONG64MOVVloadidx,
+		ssa.OpLOONG64MOVFloadidx,
+		ssa.OpLOONG64MOVDloadidx:
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_MEM
+		p.From.Name = obj.NAME_NONE
+		p.From.Reg = v.Args[0].Reg()
+		p.From.Index = v.Args[1].Reg()
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = v.Reg()
+
+	case ssa.OpLOONG64MOVBstoreidx,
+		ssa.OpLOONG64MOVHstoreidx,
+		ssa.OpLOONG64MOVWstoreidx,
+		ssa.OpLOONG64MOVVstoreidx,
+		ssa.OpLOONG64MOVFstoreidx,
+		ssa.OpLOONG64MOVDstoreidx:
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_REG
+		p.From.Reg = v.Args[2].Reg()
+		p.To.Type = obj.TYPE_MEM
+		p.To.Name = obj.NAME_NONE
+		p.To.Reg = v.Args[0].Reg()
+		p.To.Index = v.Args[1].Reg()
+
+	case ssa.OpLOONG64MOVBstorezeroidx,
+		ssa.OpLOONG64MOVHstorezeroidx,
+		ssa.OpLOONG64MOVWstorezeroidx,
+		ssa.OpLOONG64MOVVstorezeroidx:
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_REG
+		p.From.Reg = loong64.REGZERO
+		p.To.Type = obj.TYPE_MEM
+		p.To.Name = obj.NAME_NONE
+		p.To.Reg = v.Args[0].Reg()
+		p.To.Index = v.Args[1].Reg()
+
 	case ssa.OpLOONG64MOVBload,
 		ssa.OpLOONG64MOVBUload,
 		ssa.OpLOONG64MOVHload,
@@ -418,6 +477,10 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		ssa.OpLOONG64TRUNCDV,
 		ssa.OpLOONG64MOVFD,
 		ssa.OpLOONG64MOVDF,
+		ssa.OpLOONG64MOVWfpgp,
+		ssa.OpLOONG64MOVWgpfp,
+		ssa.OpLOONG64MOVVfpgp,
+		ssa.OpLOONG64MOVVgpfp,
 		ssa.OpLOONG64NEGF,
 		ssa.OpLOONG64NEGD,
 		ssa.OpLOONG64SQRTD,
@@ -811,14 +874,20 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 var blockJump = map[ssa.BlockKind]struct {
 	asm, invasm obj.As
 }{
-	ssa.BlockLOONG64EQ:  {loong64.ABEQ, loong64.ABNE},
-	ssa.BlockLOONG64NE:  {loong64.ABNE, loong64.ABEQ},
-	ssa.BlockLOONG64LTZ: {loong64.ABLTZ, loong64.ABGEZ},
-	ssa.BlockLOONG64GEZ: {loong64.ABGEZ, loong64.ABLTZ},
-	ssa.BlockLOONG64LEZ: {loong64.ABLEZ, loong64.ABGTZ},
-	ssa.BlockLOONG64GTZ: {loong64.ABGTZ, loong64.ABLEZ},
-	ssa.BlockLOONG64FPT: {loong64.ABFPT, loong64.ABFPF},
-	ssa.BlockLOONG64FPF: {loong64.ABFPF, loong64.ABFPT},
+	ssa.BlockLOONG64EQ:   {loong64.ABEQ, loong64.ABNE},
+	ssa.BlockLOONG64NE:   {loong64.ABNE, loong64.ABEQ},
+	ssa.BlockLOONG64LTZ:  {loong64.ABLTZ, loong64.ABGEZ},
+	ssa.BlockLOONG64GEZ:  {loong64.ABGEZ, loong64.ABLTZ},
+	ssa.BlockLOONG64LEZ:  {loong64.ABLEZ, loong64.ABGTZ},
+	ssa.BlockLOONG64GTZ:  {loong64.ABGTZ, loong64.ABLEZ},
+	ssa.BlockLOONG64FPT:  {loong64.ABFPT, loong64.ABFPF},
+	ssa.BlockLOONG64FPF:  {loong64.ABFPF, loong64.ABFPT},
+	ssa.BlockLOONG64BEQ:  {loong64.ABEQ, loong64.ABNE},
+	ssa.BlockLOONG64BNE:  {loong64.ABNE, loong64.ABEQ},
+	ssa.BlockLOONG64BGE:  {loong64.ABGE, loong64.ABLT},
+	ssa.BlockLOONG64BLT:  {loong64.ABLT, loong64.ABGE},
+	ssa.BlockLOONG64BLTU: {loong64.ABLTU, loong64.ABGEU},
+	ssa.BlockLOONG64BGEU: {loong64.ABGEU, loong64.ABLTU},
 }
 
 func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
@@ -850,6 +919,9 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 	case ssa.BlockLOONG64EQ, ssa.BlockLOONG64NE,
 		ssa.BlockLOONG64LTZ, ssa.BlockLOONG64GEZ,
 		ssa.BlockLOONG64LEZ, ssa.BlockLOONG64GTZ,
+		ssa.BlockLOONG64BEQ, ssa.BlockLOONG64BNE,
+		ssa.BlockLOONG64BLT, ssa.BlockLOONG64BGE,
+		ssa.BlockLOONG64BLTU, ssa.BlockLOONG64BGEU,
 		ssa.BlockLOONG64FPT, ssa.BlockLOONG64FPF:
 		jmp := blockJump[b.Kind]
 		var p *obj.Prog
@@ -867,9 +939,21 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 				s.Br(obj.AJMP, b.Succs[0].Block())
 			}
 		}
-		if !b.Controls[0].Type.IsFlags() {
+		switch b.Kind {
+		case ssa.BlockLOONG64BEQ, ssa.BlockLOONG64BNE,
+			ssa.BlockLOONG64BGE, ssa.BlockLOONG64BLT,
+			ssa.BlockLOONG64BGEU, ssa.BlockLOONG64BLTU:
 			p.From.Type = obj.TYPE_REG
 			p.From.Reg = b.Controls[0].Reg()
+			p.Reg = b.Controls[1].Reg()
+		case ssa.BlockLOONG64EQ, ssa.BlockLOONG64NE,
+			ssa.BlockLOONG64LTZ, ssa.BlockLOONG64GEZ,
+			ssa.BlockLOONG64LEZ, ssa.BlockLOONG64GTZ,
+			ssa.BlockLOONG64FPT, ssa.BlockLOONG64FPF:
+			if !b.Controls[0].Type.IsFlags() {
+				p.From.Type = obj.TYPE_REG
+				p.From.Reg = b.Controls[0].Reg()
+			}
 		}
 	default:
 		b.Fatalf("branch not implemented: %s", b.LongString())

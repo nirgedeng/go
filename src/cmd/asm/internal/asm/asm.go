@@ -353,6 +353,7 @@ func (p *Parser) asmPCAlign(operands [][]lex.Token) {
 	prog := &obj.Prog{
 		Ctxt: p.ctxt,
 		As:   obj.APCALIGN,
+		Pos:  p.pos(),
 		From: key,
 	}
 	p.append(prog, "", true)
@@ -816,6 +817,13 @@ func (p *Parser) asmInstruction(op obj.As, cond string, a []obj.Addr) {
 			break
 		}
 		if p.arch.Family == sys.ARM64 {
+			prog.From = a[0]
+			prog.Reg = p.getRegister(prog, op, &a[1])
+			prog.AddRestSource(a[2])
+			prog.To = a[3]
+			break
+		}
+		if p.arch.Family == sys.Loong64 {
 			prog.From = a[0]
 			prog.Reg = p.getRegister(prog, op, &a[1])
 			prog.AddRestSource(a[2])

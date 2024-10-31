@@ -69,6 +69,7 @@ var (
 	procGetFileInformationByHandleEx      = modkernel32.NewProc("GetFileInformationByHandleEx")
 	procGetFinalPathNameByHandleW         = modkernel32.NewProc("GetFinalPathNameByHandleW")
 	procGetModuleFileNameW                = modkernel32.NewProc("GetModuleFileNameW")
+	procGetModuleHandleW                  = modkernel32.NewProc("GetModuleHandleW")
 	procGetTempPath2W                     = modkernel32.NewProc("GetTempPath2W")
 	procGetVolumeInformationByHandleW     = modkernel32.NewProc("GetVolumeInformationByHandleW")
 	procGetVolumeNameForVolumeMountPointW = modkernel32.NewProc("GetVolumeNameForVolumeMountPointW")
@@ -87,7 +88,9 @@ var (
 	procNetUserAdd                        = modnetapi32.NewProc("NetUserAdd")
 	procNetUserDel                        = modnetapi32.NewProc("NetUserDel")
 	procNetUserGetLocalGroups             = modnetapi32.NewProc("NetUserGetLocalGroups")
+	procNtCreateFile                      = modntdll.NewProc("NtCreateFile")
 	procRtlGetVersion                     = modntdll.NewProc("RtlGetVersion")
+	procRtlNtStatusToDosErrorNoTeb        = modntdll.NewProc("RtlNtStatusToDosErrorNoTeb")
 	procGetProcessMemoryInfo              = modpsapi.NewProc("GetProcessMemoryInfo")
 	procCreateEnvironmentBlock            = moduserenv.NewProc("CreateEnvironmentBlock")
 	procDestroyEnvironmentBlock           = moduserenv.NewProc("DestroyEnvironmentBlock")
@@ -287,6 +290,15 @@ func GetModuleFileName(module syscall.Handle, fn *uint16, len uint32) (n uint32,
 	return
 }
 
+func GetModuleHandle(modulename *uint16) (handle syscall.Handle, err error) {
+	r0, _, e1 := syscall.Syscall(procGetModuleHandleW.Addr(), 1, uintptr(unsafe.Pointer(modulename)), 0, 0)
+	handle = syscall.Handle(r0)
+	if handle == 0 {
+		err = errnoErr(e1)
+	}
+	return
+}
+
 func GetTempPath2(buflen uint32, buf *uint16) (n uint32, err error) {
 	r0, _, e1 := syscall.Syscall(procGetTempPath2W.Addr(), 2, uintptr(buflen), uintptr(unsafe.Pointer(buf)), 0)
 	n = uint32(r0)
@@ -429,8 +441,22 @@ func NetUserGetLocalGroups(serverName *uint16, userName *uint16, level uint32, f
 	return
 }
 
+func NtCreateFile(handle *syscall.Handle, access uint32, oa *OBJECT_ATTRIBUTES, iosb *IO_STATUS_BLOCK, allocationSize *int64, attributes uint32, share uint32, disposition uint32, options uint32, eabuffer uintptr, ealength uint32) (ntstatus error) {
+	r0, _, _ := syscall.Syscall12(procNtCreateFile.Addr(), 11, uintptr(unsafe.Pointer(handle)), uintptr(access), uintptr(unsafe.Pointer(oa)), uintptr(unsafe.Pointer(iosb)), uintptr(unsafe.Pointer(allocationSize)), uintptr(attributes), uintptr(share), uintptr(disposition), uintptr(options), uintptr(eabuffer), uintptr(ealength), 0)
+	if r0 != 0 {
+		ntstatus = NTStatus(r0)
+	}
+	return
+}
+
 func rtlGetVersion(info *_OSVERSIONINFOW) {
 	syscall.Syscall(procRtlGetVersion.Addr(), 1, uintptr(unsafe.Pointer(info)), 0, 0)
+	return
+}
+
+func rtlNtStatusToDosErrorNoTeb(ntstatus NTStatus) (ret syscall.Errno) {
+	r0, _, _ := syscall.Syscall(procRtlNtStatusToDosErrorNoTeb.Addr(), 1, uintptr(ntstatus), 0, 0)
+	ret = syscall.Errno(r0)
 	return
 }
 

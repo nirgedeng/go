@@ -365,9 +365,8 @@ func writeTableSec(ctxt *ld.Link, fns []*wasmFunc) {
 func writeMemorySec(ctxt *ld.Link, ldr *loader.Loader) {
 	sizeOffset := writeSecHeader(ctxt, sectionMemory)
 
-	dataSection := ldr.SymSect(ldr.Lookup("runtime.data", 0))
-	dataEnd := dataSection.Vaddr + dataSection.Length
-	var initialSize = dataEnd + 16<<20 // 16MB, enough for runtime init without growing
+	dataEnd := uint64(ldr.SymValue(ldr.Lookup("runtime.end", 0)))
+	var initialSize = dataEnd + 1<<20 // 1 MB, for runtime init allocating a few pages
 
 	const wasmPageSize = 64 << 10 // 64KB
 
@@ -446,7 +445,7 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 		ctxt.Out.WriteByte(0x02)      // mem export
 		writeUleb128(ctxt.Out, 0)     // memidx
 	case "js":
-		writeUleb128(ctxt.Out, 4) // number of exports
+		writeUleb128(ctxt.Out, uint64(4+len(ldr.WasmExports))) // number of exports
 		for _, name := range []string{"run", "resume", "getsp"} {
 			s := ldr.Lookup("wasm_export_"+name, 0)
 			if s == 0 {
@@ -454,6 +453,12 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 			}
 			idx := uint32(lenHostImports) + uint32(ldr.SymValue(s)>>16) - funcValueOffset
 			writeName(ctxt.Out, name)           // inst.exports.run/resume/getsp in wasm_exec.js
+			ctxt.Out.WriteByte(0x00)            // func export
+			writeUleb128(ctxt.Out, uint64(idx)) // funcidx
+		}
+		for _, s := range ldr.WasmExports {
+			idx := uint32(lenHostImports) + uint32(ldr.SymValue(s)>>16) - funcValueOffset
+			writeName(ctxt.Out, ldr.SymName(s))
 			ctxt.Out.WriteByte(0x00)            // func export
 			writeUleb128(ctxt.Out, uint64(idx)) // funcidx
 		}

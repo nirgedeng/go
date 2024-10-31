@@ -224,7 +224,7 @@ func TestRemoveAllLongPathRelative(t *testing.T) {
 	// Test that RemoveAll doesn't hang with long relative paths.
 	// See go.dev/issue/36375.
 	tmp := t.TempDir()
-	chdir(t, tmp)
+	t.Chdir(tmp)
 	dir := filepath.Join(tmp, "foo", "bar", strings.Repeat("a", 150), strings.Repeat("b", 150))
 	err := os.MkdirAll(dir, 0755)
 	if err != nil {
@@ -265,7 +265,7 @@ func TestLongPathAbs(t *testing.T) {
 }
 
 func TestLongPathRel(t *testing.T) {
-	chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	target := strings.Repeat("b\\", 300)
 	testLongPathAbs(t, target)
@@ -276,5 +276,58 @@ func BenchmarkAddExtendedPrefix(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		os.AddExtendedPrefix(veryLong)
+	}
+}
+
+func TestValidatePathForCreate(t *testing.T) {
+	tests := []struct {
+		path string
+		pass bool
+	}{
+		{`C:\foo`, true},
+		{`C:\foo\ `, false},
+		{`C:\foo\.`, true},
+		{`C:\foo.`, false},
+		{`C:\foo\ .`, false},
+		{`C:\foo \`, false},
+		{"C:/foo/", true},
+		{"C:/foo", true},
+		{"C:/foo/.", true},
+		{"C:/foo/ .", false},
+		{".", true},
+		{"..", true},
+		{"...", false},
+		{`\\?\C:\foo`, true},
+		{`\\?\C:\foo\ `, true},
+		{`\\?\C:\foo\.`, true},
+		{`\??\C:\foo`, true},
+		{`\??\C:\foo\ `, true},
+		{`\??\C:\foo\.`, true},
+		{`\\server\share\path`, true},
+		{"", true},
+		{" ", false},
+		{"C:.", true},
+		{"C: ", false},
+		{"C:..", true},
+		{"C:...", false},
+		{"foo:.", false},
+		{"C:bar:..", false},
+		{`\..`, true},
+		{`\...`, false},
+		{"/.", true},
+		{"/..", true},
+		{"a..", false},
+		{"aa..", false},
+		{"a ", false},
+		{`a\ `, false},
+		{`a \`, false},
+		{`.\`, true},
+		{`..\`, true},
+	}
+
+	for _, tt := range tests {
+		if os.ValidatePathForCreate(tt.path) != tt.pass {
+			t.Errorf("validatePathForCreate(%q) = %v, want %v", tt.path, !tt.pass, tt.pass)
+		}
 	}
 }
