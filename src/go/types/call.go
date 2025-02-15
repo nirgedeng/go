@@ -143,6 +143,9 @@ func (check *Checker) instantiateSignature(pos token.Pos, expr ast.Expr, typ *Si
 		}()
 	}
 
+	// For signatures, Checker.instance will always succeed because the type argument
+	// count is correct at this point (see assertion above); hence the type assertion
+	// to *Signature will always succeed.
 	inst := check.instance(pos, typ, targs, nil, check.context()).(*Signature)
 	assert(inst.TypeParams().Len() == 0) // signature is not generic anymore
 	check.recordInstance(expr, targs, inst)
@@ -530,8 +533,8 @@ func (check *Checker) arguments(call *ast.CallExpr, sig *Signature, targs []Type
 		}
 		err := check.newError(WrongArgCount)
 		err.addf(at, "%s arguments in call to %s", qualifier, call.Fun)
-		err.addf(noposn, "have %s", check.typesSummary(operandTypes(args), false))
-		err.addf(noposn, "want %s", check.typesSummary(varTypes(params), sig.variadic))
+		err.addf(noposn, "have %s", check.typesSummary(operandTypes(args), false, ddd))
+		err.addf(noposn, "want %s", check.typesSummary(varTypes(params), sig.variadic, false))
 		err.report()
 		return
 	}
@@ -777,7 +780,7 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *TypeName, w
 		}
 	case builtin:
 		// types2 uses the position of '.' for the error
-		check.errorf(e.Sel, UncalledBuiltin, "cannot select on %s", x)
+		check.errorf(e.Sel, UncalledBuiltin, "invalid use of %s in selector expression", x)
 		goto Error
 	case invalid:
 		goto Error

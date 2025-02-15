@@ -131,11 +131,13 @@ var runtimeDecls = [...]struct {
 	{"mapassign_fast64ptr", funcTag, 96},
 	{"mapassign_faststr", funcTag, 89},
 	{"mapiterinit", funcTag, 97},
+	{"mapIterStart", funcTag, 97},
 	{"mapdelete", funcTag, 97},
 	{"mapdelete_fast32", funcTag, 98},
 	{"mapdelete_fast64", funcTag, 99},
 	{"mapdelete_faststr", funcTag, 100},
 	{"mapiternext", funcTag, 101},
+	{"mapIterNext", funcTag, 101},
 	{"mapclear", funcTag, 102},
 	{"makechan64", funcTag, 104},
 	{"makechan", funcTag, 105},
@@ -237,6 +239,9 @@ var runtimeDecls = [...]struct {
 	{"x86HasFMA", varTag, 6},
 	{"armHasVFPv4", varTag, 6},
 	{"arm64HasATOMICS", varTag, 6},
+	{"loong64HasLAMCAS", varTag, 6},
+	{"loong64HasLAM_BH", varTag, 6},
+	{"loong64HasLSX", varTag, 6},
 	{"asanregisterglobals", funcTag, 130},
 }
 

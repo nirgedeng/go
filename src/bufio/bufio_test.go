@@ -939,7 +939,6 @@ func (t *testReader) Read(buf []byte) (n int, err error) {
 }
 
 func testReadLine(t *testing.T, input []byte) {
-	//for stride := 1; stride < len(input); stride++ {
 	for stride := 1; stride < 2; stride++ {
 		done := 0
 		reader := testReader{input, stride}
@@ -1150,7 +1149,7 @@ func (w errorWriterToTest) Write(p []byte) (int, error) {
 var errorWriterToTests = []errorWriterToTest{
 	{1, 0, nil, io.ErrClosedPipe, io.ErrClosedPipe},
 	{0, 1, io.ErrClosedPipe, nil, io.ErrClosedPipe},
-	{0, 0, io.ErrUnexpectedEOF, io.ErrClosedPipe, io.ErrClosedPipe},
+	{0, 0, io.ErrUnexpectedEOF, io.ErrClosedPipe, io.ErrUnexpectedEOF},
 	{0, 1, io.EOF, nil, nil},
 }
 

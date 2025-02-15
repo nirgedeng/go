@@ -480,7 +480,7 @@ func (d *dwctxt) dotypedef(parent *dwarf.DWDie, name string, def *dwarf.DWDie) *
 		return nil
 	}
 	if def == nil {
-		Errorf(nil, "dwarf: bad def in dotypedef")
+		Errorf("dwarf: bad def in dotypedef")
 	}
 
 	// Create a new loader symbol for the typedef. We no longer
@@ -520,7 +520,7 @@ func (d *dwctxt) defgotype(gotype loader.Sym) loader.Sym {
 		d.linkctxt.Errorf(gotype, "dwarf: type name doesn't start with \"type:\"")
 		return d.mustFind("<unspecified>")
 	}
-	name := sn[5:] // could also decode from Type.string
+	name := sn[len("type:"):] // could also decode from Type.string
 
 	sdie := d.find(name)
 	if sdie != 0 {
@@ -534,7 +534,7 @@ func (d *dwctxt) defgotype(gotype loader.Sym) loader.Sym {
 
 func (d *dwctxt) newtype(gotype loader.Sym) *dwarf.DWDie {
 	sn := d.ldr.SymName(gotype)
-	name := sn[5:] // could also decode from Type.string
+	name := sn[len("type:"):] // could also decode from Type.string
 	tdata := d.ldr.Data(gotype)
 	if len(tdata) == 0 {
 		d.linkctxt.Errorf(gotype, "missing type")
@@ -584,7 +584,7 @@ func (d *dwctxt) newtype(gotype loader.Sym) *dwarf.DWDie {
 		die = d.newdie(&dwtypes, dwarf.DW_ABRV_ARRAYTYPE, name)
 		typedefdie = d.dotypedef(&dwtypes, name, die)
 		newattr(die, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, bytesize, 0)
-		s := decodetypeArrayElem(d.ldr, d.arch, gotype)
+		s := decodetypeArrayElem(d.linkctxt, d.arch, gotype)
 		d.newrefattr(die, dwarf.DW_AT_type, d.defgotype(s))
 		fld := d.newdie(die, dwarf.DW_ABRV_ARRAYRANGE, "range")
 
@@ -661,7 +661,7 @@ func (d *dwctxt) newtype(gotype loader.Sym) *dwarf.DWDie {
 		die = d.newdie(&dwtypes, dwarf.DW_ABRV_SLICETYPE, name)
 		typedefdie = d.dotypedef(&dwtypes, name, die)
 		newattr(die, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, bytesize, 0)
-		s := decodetypeArrayElem(d.ldr, d.arch, gotype)
+		s := decodetypeArrayElem(d.linkctxt, d.arch, gotype)
 		elem := d.defgotype(s)
 		d.newrefattr(die, dwarf.DW_AT_go_elem, elem)
 
@@ -676,7 +676,7 @@ func (d *dwctxt) newtype(gotype loader.Sym) *dwarf.DWDie {
 		nfields := decodetypeStructFieldCount(d.ldr, d.arch, gotype)
 		for i := 0; i < nfields; i++ {
 			f := decodetypeStructFieldName(d.ldr, d.arch, gotype, i)
-			s := decodetypeStructFieldType(d.ldr, d.arch, gotype, i)
+			s := decodetypeStructFieldType(d.linkctxt, d.arch, gotype, i)
 			if f == "" {
 				sn := d.ldr.SymName(s)
 				f = sn[5:] // skip "type:"
@@ -1965,8 +1965,9 @@ func dwarfGenerateDebugInfo(ctxt *Link) {
 			continue
 		}
 		t := d.ldr.SymType(idx)
-		switch t {
-		case sym.SRODATA, sym.SDATA, sym.SNOPTRDATA, sym.STYPE, sym.SBSS, sym.SNOPTRBSS, sym.STLSBSS:
+		switch {
+		case t.IsRODATA(), t.IsDATA(), t.IsNOPTRDATA(),
+			t == sym.STYPE, t == sym.SBSS, t == sym.SNOPTRBSS, t == sym.STLSBSS:
 			// ok
 		default:
 			continue

@@ -205,6 +205,10 @@ func (check *Checker) definedType(e syntax.Expr, def *TypeName) Type {
 // genericType is like typ but the type must be an (uninstantiated) generic
 // type. If cause is non-nil and the type expression was a valid type but not
 // generic, cause will be populated with a message describing the error.
+//
+// Note: If the type expression was invalid and an error was reported before,
+// cause will not be populated; thus cause alone cannot be used to determine
+// if an error occurred.
 func (check *Checker) genericType(e syntax.Expr, cause *string) Type {
 	typ := check.typInternal(e, nil)
 	assert(isTyped(typ))
@@ -317,10 +321,8 @@ func (check *Checker) typInternal(e0 syntax.Expr, def *TypeName) (T Type) {
 		return typ
 
 	case *syntax.DotsType:
-		// dots are handled explicitly where they are legal
-		// (array composite literals and parameter lists)
-		check.error(e, InvalidDotDotDot, "invalid use of '...'")
-		check.use(e.Elem)
+		// dots are handled explicitly where they are valid
+		check.error(e, InvalidSyntaxTree, "invalid use of ...")
 
 	case *syntax.StructType:
 		typ := new(Struct)
@@ -419,11 +421,6 @@ func setDefType(def *TypeName, typ Type) {
 	if def != nil {
 		switch t := def.typ.(type) {
 		case *Alias:
-			// t.fromRHS should always be set, either to an invalid type
-			// in the beginning, or to typ in certain cyclic declarations.
-			if t.fromRHS != Typ[Invalid] && t.fromRHS != typ {
-				panic(sprintf(nil, true, "t.fromRHS = %s, typ = %s\n", t.fromRHS, typ))
-			}
 			t.fromRHS = typ
 		case *Basic:
 			assert(t == Typ[Invalid])
@@ -471,9 +468,14 @@ func (check *Checker) instantiatedType(x syntax.Expr, xlist []syntax.Expr, def *
 	}
 
 	// create instance
-	// The instance is not generic anymore as it has type arguments, but it still
-	// satisfies the genericType interface because it has type parameters, too.
-	inst := check.instance(x.Pos(), gtyp, targs, nil, check.context()).(genericType)
+	// The instance is not generic anymore as it has type arguments, but unless
+	// instantiation failed, it still satisfies the genericType interface because
+	// it has type parameters, too.
+	ityp := check.instance(x.Pos(), gtyp, targs, nil, check.context())
+	inst, _ := ityp.(genericType)
+	if inst == nil {
+		return Typ[Invalid]
+	}
 
 	// For Named types, orig.tparams may not be set up, so we need to do expansion later.
 	check.later(func() {

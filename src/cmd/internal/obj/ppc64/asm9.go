@@ -199,11 +199,15 @@ var optabBase = []Optab{
 	{as: ARLDCL, a1: C_REG, a3: C_32CON, a6: C_REG, type_: 14, size: 4},
 	{as: AFADD, a1: C_FREG, a6: C_FREG, type_: 2, size: 4},
 	{as: AFADD, a1: C_FREG, a2: C_FREG, a6: C_FREG, type_: 2, size: 4},
+	{as: ADADDQ, a1: C_FREGP, a6: C_FREGP, type_: 2, size: 4},
+	{as: ADADDQ, a1: C_FREGP, a2: C_FREGP, a6: C_FREGP, type_: 2, size: 4},
 	{as: AFABS, a1: C_FREG, a6: C_FREG, type_: 33, size: 4},
 	{as: AFABS, a6: C_FREG, type_: 33, size: 4},
 	{as: AFMADD, a1: C_FREG, a2: C_FREG, a3: C_FREG, a6: C_FREG, type_: 34, size: 4},
 	{as: AFMUL, a1: C_FREG, a6: C_FREG, type_: 32, size: 4},
 	{as: AFMUL, a1: C_FREG, a2: C_FREG, a6: C_FREG, type_: 32, size: 4},
+	{as: ADMULQ, a1: C_FREGP, a6: C_FREGP, type_: 32, size: 4},
+	{as: ADMULQ, a1: C_FREGP, a2: C_FREGP, a6: C_FREGP, type_: 32, size: 4},
 
 	{as: AMOVBU, a1: C_REG, a6: C_SOREG, type_: 7, size: 4},
 	{as: AMOVBU, a1: C_REG, a6: C_XOREG, type_: 108, size: 4},
@@ -481,6 +485,8 @@ var optabBase = []Optab{
 	{as: ACMPU, a1: C_REG, a2: C_CREG, a6: C_U16CON, type_: 70, size: 4},
 	{as: AFCMPO, a1: C_FREG, a6: C_FREG, type_: 70, size: 4},
 	{as: AFCMPO, a1: C_FREG, a2: C_CREG, a6: C_FREG, type_: 70, size: 4},
+	{as: ADCMPOQ, a1: C_FREGP, a6: C_FREGP, type_: 70, size: 4},
+	{as: ADCMPOQ, a1: C_FREGP, a2: C_CREG, a6: C_FREGP, type_: 70, size: 4},
 	{as: ATW, a1: C_32CON, a2: C_REG, a6: C_REG, type_: 60, size: 4},
 	{as: ATW, a1: C_32CON, a2: C_REG, a6: C_S16CON, type_: 61, size: 4},
 	{as: ADCBF, a1: C_SOREG, type_: 43, size: 4},
@@ -1876,6 +1882,10 @@ func buildop(ctxt *obj.Link) {
 			opset(ADDIV, r0)
 			opset(ADSUB, r0)
 
+		case ADADDQ:
+			opset(ADDIVQ, r0)
+			opset(ADSUBQ, r0)
+
 		case AFMADD:
 			opset(AFMADDCC, r0)
 			opset(AFMADDS, r0)
@@ -1901,8 +1911,16 @@ func buildop(ctxt *obj.Link) {
 			opset(AFMULSCC, r0)
 			opset(ADMUL, r0)
 
+		case ADMULQ:
+			opset(ADMULQ, r0)
+
 		case AFCMPO:
 			opset(AFCMPU, r0)
+			opset(ADCMPU, r0)
+			opset(ADCMPO, r0)
+
+		case ADCMPOQ:
+			opset(ADCMPUQ, r0)
 
 		case AMTFSB0:
 			opset(AMTFSB0CC, r0)
@@ -2409,7 +2427,8 @@ func (c *ctxt9) opform(insn uint32) int {
 
 // Encode instructions and create relocation for accessing s+d according to the
 // instruction op with source or destination (as appropriate) register reg.
-func (c *ctxt9) symbolAccess(s *obj.LSym, d int64, reg int16, op uint32, reuse bool) (o1, o2 uint32, rel *obj.Reloc) {
+// The caller must call c.cursym.AddRel(c.ctxt, rel) when finished editing rel.
+func (c *ctxt9) symbolAccess(s *obj.LSym, d int64, reg int16, op uint32, reuse bool) (o1, o2 uint32, rel obj.Reloc) {
 	if c.ctxt.Headtype == objabi.Haix {
 		// Every symbol access must be made via a TOC anchor.
 		c.ctxt.Diag("symbolAccess called for %s", s.Name)
@@ -2430,26 +2449,28 @@ func (c *ctxt9) symbolAccess(s *obj.LSym, d int64, reg int16, op uint32, reuse b
 		o1 = AOP_IRR(OP_ADDIS, uint32(reg), base, 0)
 		o2 = AOP_IRR(op, uint32(reg), uint32(reg), 0)
 	}
-	rel = obj.Addrel(c.cursym)
-	rel.Off = int32(c.pc)
-	rel.Siz = 8
-	rel.Sym = s
-	rel.Add = d
+	var typ objabi.RelocType
 	if c.ctxt.Flag_shared {
 		switch form {
 		case D_FORM:
-			rel.Type = objabi.R_ADDRPOWER_TOCREL
+			typ = objabi.R_ADDRPOWER_TOCREL
 		case DS_FORM:
-			rel.Type = objabi.R_ADDRPOWER_TOCREL_DS
+			typ = objabi.R_ADDRPOWER_TOCREL_DS
 		}
-
 	} else {
 		switch form {
 		case D_FORM:
-			rel.Type = objabi.R_ADDRPOWER
+			typ = objabi.R_ADDRPOWER
 		case DS_FORM:
-			rel.Type = objabi.R_ADDRPOWER_DS
+			typ = objabi.R_ADDRPOWER_DS
 		}
+	}
+	rel = obj.Reloc{
+		Type: typ,
+		Off:  int32(c.pc),
+		Siz:  8,
+		Sym:  s,
+		Add:  d,
 	}
 	return
 }
@@ -2499,7 +2520,7 @@ func decodeMask64(mask int64) (mb, me uint32, valid bool) {
 func loadl16(r int, d int64) uint32 {
 	v := uint16(d)
 	if v == 0 {
-		// Avoid generating "ori r,r,0", r != 0. Instead, generate the architectually preferred nop.
+		// Avoid generating "ori r,r,0", r != 0. Instead, generate the architecturally preferred nop.
 		// For example, "ori r31,r31,0" is a special execution serializing nop on Power10 called "exser".
 		return NOP
 	}
@@ -2668,18 +2689,18 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 
 		o1 = OP_BR(c.opirr(p.As), uint32(v), 0)
 		if p.To.Sym != nil {
-			rel := obj.Addrel(c.cursym)
-			rel.Off = int32(c.pc)
-			rel.Siz = 4
-			rel.Sym = p.To.Sym
 			v += int32(p.To.Offset)
 			if v&03 != 0 {
 				c.ctxt.Diag("odd branch target address\n%v", p)
 				v &^= 03
 			}
-
-			rel.Add = int64(v)
-			rel.Type = objabi.R_CALLPOWER
+			c.cursym.AddRel(c.ctxt, obj.Reloc{
+				Type: objabi.R_CALLPOWER,
+				Off:  int32(c.pc),
+				Siz:  4,
+				Sym:  p.To.Sym,
+				Add:  int64(v),
+			})
 		}
 		o2 = NOP // nop, sometimes overwritten by ld r2, 24(r1) when dynamic linking
 
@@ -3052,7 +3073,9 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 		switch p.From.Name {
 		case obj.NAME_EXTERN, obj.NAME_STATIC:
 			// Load a 32 bit constant, or relocation depending on if a symbol is attached
-			o1, o2, rel = c.symbolAccess(p.From.Sym, v, p.To.Reg, OP_ADDI, true)
+			var rel1 obj.Reloc
+			o1, o2, rel1 = c.symbolAccess(p.From.Sym, v, p.To.Reg, OP_ADDI, true)
+			rel = &rel1
 		default:
 			// Add a 32 bit offset to a register.
 			o1 = AOP_IRR(OP_ADDIS, uint32(p.To.Reg), uint32(r), uint32(high16adjusted(int32(v))))
@@ -3066,6 +3089,9 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 				o1, o2 = pfxadd(int16(p.To.Reg), REG_R0, PFX_R_PCREL, 0)
 				rel.Type = objabi.R_ADDRPOWER_PCREL34
 			}
+		}
+		if rel != nil {
+			c.cursym.AddRel(c.ctxt, *rel)
 		}
 
 	case 27: /* subc ra,$simm,rd => subfic rd,ra,$simm */
@@ -3146,12 +3172,13 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 		}
 
 		if p.From.Sym != nil {
-			rel := obj.Addrel(c.cursym)
-			rel.Off = int32(c.pc)
-			rel.Siz = 8
-			rel.Sym = p.From.Sym
-			rel.Add = p.From.Offset
-			rel.Type = objabi.R_ADDR
+			c.cursym.AddRel(c.ctxt, obj.Reloc{
+				Type: objabi.R_ADDR,
+				Off:  int32(c.pc),
+				Siz:  8,
+				Sym:  p.From.Sym,
+				Add:  p.From.Offset,
+			})
 			o2 = 0
 			o1 = o2
 		}
@@ -3537,12 +3564,12 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 
 	/* relocation operations */
 	case 74:
-		var rel *obj.Reloc
 		v := c.vregoff(&p.To)
 		// Offsets in DS form stores must be a multiple of 4
 		inst := c.opstore(p.As)
 
 		// Can't reuse base for store instructions.
+		var rel obj.Reloc
 		o1, o2, rel = c.symbolAccess(p.To.Sym, v, p.From.Reg, inst, false)
 
 		// Rewrite as a prefixed store if supported.
@@ -3552,13 +3579,14 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 		} else if c.opform(inst) == DS_FORM && v&0x3 != 0 {
 			log.Fatalf("invalid offset for DS form load/store %v", p)
 		}
+		c.cursym.AddRel(c.ctxt, rel)
 
 	case 75: // 32 bit offset symbol loads (got/toc/addr)
-		var rel *obj.Reloc
 		v := p.From.Offset
 
 		// Offsets in DS form loads must be a multiple of 4
 		inst := c.opload(p.As)
+		var rel obj.Reloc
 		switch p.From.Name {
 		case obj.NAME_GOTREF, obj.NAME_TOCREF:
 			if v != 0 {
@@ -3566,7 +3594,6 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 			}
 			o1 = AOP_IRR(OP_ADDIS, uint32(p.To.Reg), REG_R2, 0)
 			o2 = AOP_IRR(inst, uint32(p.To.Reg), uint32(p.To.Reg), 0)
-			rel = obj.Addrel(c.cursym)
 			rel.Off = int32(c.pc)
 			rel.Siz = 8
 			rel.Sym = p.From.Sym
@@ -3602,6 +3629,7 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 		} else if c.opform(inst) == DS_FORM && v&0x3 != 0 {
 			log.Fatalf("invalid offset for DS form load/store %v", p)
 		}
+		c.cursym.AddRel(c.ctxt, rel)
 
 		o3 = LOP_RRR(OP_EXTSB, uint32(p.To.Reg), uint32(p.To.Reg), 0)
 
@@ -3609,41 +3637,47 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 		if p.From.Offset != 0 {
 			c.ctxt.Diag("invalid offset against tls var %v", p)
 		}
-		rel := obj.Addrel(c.cursym)
-		rel.Off = int32(c.pc)
-		rel.Siz = 8
-		rel.Sym = p.From.Sym
+		var typ objabi.RelocType
 		if !o.ispfx {
 			o1 = AOP_IRR(OP_ADDIS, uint32(p.To.Reg), REG_R13, 0)
 			o2 = AOP_IRR(OP_ADDI, uint32(p.To.Reg), uint32(p.To.Reg), 0)
-			rel.Type = objabi.R_POWER_TLS_LE
+			typ = objabi.R_POWER_TLS_LE
 		} else {
 			o1, o2 = pfxadd(p.To.Reg, REG_R13, PFX_R_ABS, 0)
-			rel.Type = objabi.R_POWER_TLS_LE_TPREL34
+			typ = objabi.R_POWER_TLS_LE_TPREL34
 		}
+		c.cursym.AddRel(c.ctxt, obj.Reloc{
+			Type: typ,
+			Off:  int32(c.pc),
+			Siz:  8,
+			Sym:  p.From.Sym,
+		})
 
 	case 80:
 		if p.From.Offset != 0 {
 			c.ctxt.Diag("invalid offset against tls var %v", p)
 		}
-		rel := obj.Addrel(c.cursym)
-		rel.Off = int32(c.pc)
-		rel.Siz = 8
-		rel.Sym = p.From.Sym
-		rel.Type = objabi.R_POWER_TLS_IE
+		typ := objabi.R_POWER_TLS_IE
 		if !o.ispfx {
 			o1 = AOP_IRR(OP_ADDIS, uint32(p.To.Reg), REG_R2, 0)
 			o2 = AOP_IRR(c.opload(AMOVD), uint32(p.To.Reg), uint32(p.To.Reg), 0)
 		} else {
 			o1, o2 = pfxload(p.As, p.To.Reg, REG_R0, PFX_R_PCREL)
-			rel.Type = objabi.R_POWER_TLS_IE_PCREL34
+			typ = objabi.R_POWER_TLS_IE_PCREL34
 		}
+		c.cursym.AddRel(c.ctxt, obj.Reloc{
+			Type: typ,
+			Off:  int32(c.pc),
+			Siz:  8,
+			Sym:  p.From.Sym,
+		})
 		o3 = AOP_RRR(OP_ADD, uint32(p.To.Reg), uint32(p.To.Reg), REG_R13)
-		rel = obj.Addrel(c.cursym)
-		rel.Off = int32(c.pc) + 8
-		rel.Siz = 4
-		rel.Sym = p.From.Sym
-		rel.Type = objabi.R_POWER_TLS
+		c.cursym.AddRel(c.ctxt, obj.Reloc{
+			Type: objabi.R_POWER_TLS,
+			Off:  int32(c.pc) + 8,
+			Siz:  4,
+			Sym:  p.From.Sym,
+		})
 
 	case 82: /* vector instructions, VX-form and VC-form */
 		if p.From.Type == obj.TYPE_REG {
@@ -3992,6 +4026,22 @@ func (c *ctxt9) oprrr(a obj.As) uint32 {
 		return OPVCC(59, 34, 0, 0)
 	case ADSUB:
 		return OPVCC(59, 514, 0, 0)
+	case ADADDQ:
+		return OPVCC(63, 2, 0, 0)
+	case ADDIVQ:
+		return OPVCC(63, 546, 0, 0)
+	case ADMULQ:
+		return OPVCC(63, 34, 0, 0)
+	case ADSUBQ:
+		return OPVCC(63, 514, 0, 0)
+	case ADCMPU:
+		return OPVCC(59, 642, 0, 0)
+	case ADCMPUQ:
+		return OPVCC(63, 642, 0, 0)
+	case ADCMPO:
+		return OPVCC(59, 130, 0, 0)
+	case ADCMPOQ:
+		return OPVCC(63, 130, 0, 0)
 
 	case ADCBF:
 		return OPVCC(31, 86, 0, 0)

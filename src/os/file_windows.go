@@ -17,29 +17,23 @@ import (
 	"unsafe"
 )
 
-var errInvalidPath = errors.New("invalid path: cannot end with a space or period")
-
 // This matches the value in syscall/syscall_windows.go.
 const _UTIME_OMIT = -1
 
 // file is the real representation of *File.
 // The extra level of indirection ensures that no clients of os
-// can overwrite this data, which could cause the finalizer
+// can overwrite this data, which could cause the cleanup
 // to close the wrong file descriptor.
 type file struct {
 	pfd        poll.FD
 	name       string
 	dirinfo    atomic.Pointer[dirInfo] // nil unless directory being read
 	appendMode bool                    // whether file is opened for appending
+	cleanup    runtime.Cleanup         // cleanup closes the file when no longer referenced
 }
 
-// Fd returns the Windows handle referencing the open file.
-// If f is closed, the file descriptor becomes invalid.
-// If f is garbage collected, a finalizer may close the file descriptor,
-// making it invalid; see [runtime.SetFinalizer] for more information on when
-// a finalizer might be run. On Unix systems this will cause the [File.SetDeadline]
-// methods to stop working.
-func (file *File) Fd() uintptr {
+// fd is the Windows implementation of Fd.
+func (file *File) fd() uintptr {
 	if file == nil {
 		return uintptr(syscall.InvalidHandle)
 	}
@@ -67,7 +61,7 @@ func newFile(h syscall.Handle, name string, kind string) *File {
 		},
 		name: name,
 	}}
-	runtime.SetFinalizer(f.file, (*file).close)
+	f.cleanup = runtime.AddCleanup(f, func(f *file) { f.close() }, f.file)
 
 	// Ignore initialization errors.
 	// Assume any problems will show up in later I/O.
@@ -104,9 +98,6 @@ func openFileNolog(name string, flag int, perm FileMode) (*File, error) {
 	if name == "" {
 		return nil, &PathError{Op: "open", Path: name, Err: syscall.ENOENT}
 	}
-	if flag&O_CREATE != 0 && !validatePathForCreate(name) {
-		return nil, &PathError{Op: "open", Path: name, Err: errInvalidPath}
-	}
 	path := fixLongPath(name)
 	r, err := syscall.Open(path, flag|syscall.O_CLOEXEC, syscallMode(perm))
 	if err != nil {
@@ -117,14 +108,6 @@ func openFileNolog(name string, flag int, perm FileMode) (*File, error) {
 
 func openDirNolog(name string) (*File, error) {
 	return openFileNolog(name, O_RDONLY, 0)
-}
-
-func mkdir(name string, perm FileMode) error {
-	if !validatePathForCreate(name) {
-		return errInvalidPath
-	}
-	longName := fixLongPath(name)
-	return syscall.Mkdir(longName, syscallMode(perm))
 }
 
 func (file *file) close() error {
@@ -142,8 +125,9 @@ func (file *file) close() error {
 		err = &PathError{Op: "close", Path: file.name, Err: e}
 	}
 
-	// no need for a finalizer anymore
-	runtime.SetFinalizer(file, nil)
+	// There is no need for a cleanup at this point. File must be alive at the point
+	// where cleanup.stop is called.
+	file.cleanup.Stop()
 	return err
 }
 
@@ -217,9 +201,6 @@ func Remove(name string) error {
 }
 
 func rename(oldname, newname string) error {
-	if !validatePathForCreate(newname) {
-		return &LinkError{"rename", oldname, newname, errInvalidPath}
-	}
 	e := windows.Rename(fixLongPath(oldname), fixLongPath(newname))
 	if e != nil {
 		return &LinkError{"rename", oldname, newname, e}
@@ -268,9 +249,6 @@ func tempDir() string {
 // Link creates newname as a hard link to the oldname file.
 // If there is an error, it will be of type *LinkError.
 func Link(oldname, newname string) error {
-	if !validatePathForCreate(newname) {
-		return &LinkError{"link", oldname, newname, errInvalidPath}
-	}
 	n, err := syscall.UTF16PtrFromString(fixLongPath(newname))
 	if err != nil {
 		return &LinkError{"link", oldname, newname, err}
@@ -291,9 +269,6 @@ func Link(oldname, newname string) error {
 // if oldname is later created as a directory the symlink will not work.
 // If there is an error, it will be of type *LinkError.
 func Symlink(oldname, newname string) error {
-	if !validatePathForCreate(newname) {
-		return &LinkError{"symlink", oldname, newname, errInvalidPath}
-	}
 	// '/' does not work in link's content
 	oldname = filepathlite.FromSlash(oldname)
 
@@ -437,10 +412,13 @@ func readReparseLink(path string) (string, error) {
 		return "", err
 	}
 	defer syscall.CloseHandle(h)
+	return readReparseLinkHandle(h)
+}
 
+func readReparseLinkHandle(h syscall.Handle) (string, error) {
 	rdbbuf := make([]byte, syscall.MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
 	var bytesReturned uint32
-	err = syscall.DeviceIoControl(h, syscall.FSCTL_GET_REPARSE_POINT, nil, 0, &rdbbuf[0], uint32(len(rdbbuf)), &bytesReturned, nil)
+	err := syscall.DeviceIoControl(h, syscall.FSCTL_GET_REPARSE_POINT, nil, 0, &rdbbuf[0], uint32(len(rdbbuf)), &bytesReturned, nil)
 	if err != nil {
 		return "", err
 	}

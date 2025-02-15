@@ -323,6 +323,9 @@ func rewriteValue386(v *Value) bool {
 	case OpCtz32NonZero:
 		v.Op = Op386BSFL
 		return true
+	case OpCtz64On32:
+		v.Op = Op386LoweredCtz64
+		return true
 	case OpCtz8:
 		return rewriteValue386_OpCtz8(v)
 	case OpCtz8NonZero:
@@ -3488,6 +3491,19 @@ func rewriteValue386_Op386MOVBLSXload(v *Value) bool {
 		v.AddArg2(base, mem)
 		return true
 	}
+	// match: (MOVBLSXload [off] {sym} (SB) _)
+	// cond: symIsRO(sym)
+	// result: (MOVLconst [int32(int8(read8(sym, int64(off))))])
+	for {
+		off := auxIntToInt32(v.AuxInt)
+		sym := auxToSym(v.Aux)
+		if v_0.Op != OpSB || !(symIsRO(sym)) {
+			break
+		}
+		v.reset(Op386MOVLconst)
+		v.AuxInt = int32ToAuxInt(int32(int8(read8(sym, int64(off)))))
+		return true
+	}
 	return false
 }
 func rewriteValue386_Op386MOVBLZX(v *Value) bool {
@@ -4667,6 +4683,19 @@ func rewriteValue386_Op386MOVWLSXload(v *Value) bool {
 		v.AuxInt = int32ToAuxInt(off1 + off2)
 		v.Aux = symToAux(mergeSym(sym1, sym2))
 		v.AddArg2(base, mem)
+		return true
+	}
+	// match: (MOVWLSXload [off] {sym} (SB) _)
+	// cond: symIsRO(sym)
+	// result: (MOVLconst [int32(int16(read16(sym, int64(off), config.ctxt.Arch.ByteOrder)))])
+	for {
+		off := auxIntToInt32(v.AuxInt)
+		sym := auxToSym(v.Aux)
+		if v_0.Op != OpSB || !(symIsRO(sym)) {
+			break
+		}
+		v.reset(Op386MOVLconst)
+		v.AuxInt = int32ToAuxInt(int32(int16(read16(sym, int64(off), config.ctxt.Arch.ByteOrder))))
 		return true
 	}
 	return false

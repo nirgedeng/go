@@ -468,7 +468,7 @@ func TestMachOUUID(t *testing.T) {
 			uuid := extractUUID(exe)
 			if test.expect == "gobuildid" {
 				// Go buildid is not known in source code. Check UUID is present,
-				// and satisifies UUIDv3.
+				// and satisfies UUIDv3.
 				if uuid == "" {
 					t.Fatal("expect nonempty UUID, got empty")
 				}
@@ -1518,6 +1518,8 @@ func TestCheckLinkname(t *testing.T) {
 		{"coro_asm", false},
 		// pull-only linkname is not ok
 		{"coro2.go", false},
+		// pull linkname of a builtin symbol is not ok
+		{"builtin.go", false},
 		// legacy bad linkname is ok, for now
 		{"fastrand.go", true},
 		{"badlinkname.go", true},

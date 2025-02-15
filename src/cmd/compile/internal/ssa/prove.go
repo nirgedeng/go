@@ -462,6 +462,25 @@ func newFactsTable(f *Func) *factsTable {
 	return ft
 }
 
+// initLimitForNewValue initializes the limits for newly created values,
+// possibly needing to expand the limits slice. Currently used by
+// simplifyBlock when certain provably constant results are folded.
+func (ft *factsTable) initLimitForNewValue(v *Value) {
+	if int(v.ID) >= len(ft.limits) {
+		f := v.Block.Func
+		n := f.NumValues()
+		if cap(ft.limits) >= n {
+			ft.limits = ft.limits[:n]
+		} else {
+			old := ft.limits
+			ft.limits = f.Cache.allocLimitSlice(n)
+			copy(ft.limits, old)
+			f.Cache.freeLimitSlice(old)
+		}
+	}
+	ft.limits[v.ID] = initLimit(v)
+}
+
 // signedMin records the fact that we know v is at least
 // min in the signed domain.
 func (ft *factsTable) signedMin(v *Value, min int64) bool {
@@ -1343,11 +1362,11 @@ func prove(f *Func) {
 			start, end = end, start
 		}
 
-		if !(start.Op == OpConst8 || start.Op == OpConst16 || start.Op == OpConst32 || start.Op == OpConst64) {
+		if !start.isGenericIntConst() {
 			// if start is not a constant we would be winning nothing from inverting the loop
 			continue
 		}
-		if end.Op == OpConst8 || end.Op == OpConst16 || end.Op == OpConst32 || end.Op == OpConst64 {
+		if end.isGenericIntConst() {
 			// TODO: if both start and end are constants we should rewrite such that the comparison
 			// is against zero and nxt is ++ or -- operation
 			// That means:
@@ -1550,7 +1569,8 @@ func prove(f *Func) {
 
 // initLimit sets initial constant limit for v.  This limit is based
 // only on the operation itself, not any of its input arguments. This
-// method is only called once on prove pass startup (unlike
+// method is only used in two places, once when the prove pass startup
+// and the other when a new ssa value is created, both for init. (unlike
 // flowLimit, below, which computes additional constraints based on
 // ranges of opcode arguments).
 func initLimit(v *Value) limit {
@@ -1632,6 +1652,10 @@ func initLimit(v *Value) limit {
 		lim = lim.unsignedMax(16)
 	case OpCtz8, OpBitLen8:
 		lim = lim.unsignedMax(8)
+
+	// bool to uint8 conversion
+	case OpCvtBoolToUint8:
+		lim = lim.unsignedMax(1)
 
 	// length operations
 	case OpStringLen, OpSliceLen, OpSliceCap:
@@ -2269,6 +2293,7 @@ func simplifyBlock(sdom SparseTree, ft *factsTable, b *Block) {
 				continue
 			}
 			v.SetArg(i, c)
+			ft.initLimitForNewValue(c)
 			if b.Func.pass.debug > 1 {
 				b.Func.Warnl(v.Pos, "Proved %v's arg %d (%v) is constant %d", v, i, arg, constValue)
 			}

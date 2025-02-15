@@ -305,18 +305,25 @@ func (f *File) WriteString(s string) (n int, err error) {
 // bits (before umask).
 // If there is an error, it will be of type *PathError.
 func Mkdir(name string, perm FileMode) error {
-	err := mkdir(name, perm)
-	if err != nil {
-		return &PathError{Op: "mkdir", Path: name, Err: err}
+	longName := fixLongPath(name)
+	e := ignoringEINTR(func() error {
+		return syscall.Mkdir(longName, syscallMode(perm))
+	})
+
+	if e != nil {
+		return &PathError{Op: "mkdir", Path: name, Err: e}
 	}
+
 	// mkdir(2) itself won't handle the sticky bit on *BSD and Solaris
 	if !supportsCreateWithStickyBit && perm&ModeSticky != 0 {
-		err = setStickyBit(name)
-		if err != nil {
+		e = setStickyBit(name)
+
+		if e != nil {
 			Remove(name)
-			return err
+			return e
 		}
 	}
+
 	return nil
 }
 
@@ -390,6 +397,8 @@ func OpenFile(name string, flag int, perm FileMode) (*File, error) {
 
 	return f, nil
 }
+
+var errPathEscapes = errors.New("path escapes from parent")
 
 // openDir opens a file which is assumed to be a directory. As such, it skips
 // the syscalls that make the file descriptor non-blocking as these take time
@@ -676,6 +685,23 @@ func (f *File) SyscallConn() (syscall.RawConn, error) {
 	return newRawConn(f)
 }
 
+// Fd returns the system file descriptor or handle referencing the open file.
+// If f is closed, the descriptor becomes invalid.
+// If f is garbage collected, a cleanup may close the descriptor,
+// making it invalid; see [runtime.AddCleanup] for more information on when
+// a cleanup might be run.
+//
+// Do not close the returned descriptor; that could cause a later
+// close of f to close an unrelated descriptor.
+//
+// On Unix systems this will cause the [File.SetDeadline]
+// methods to stop working.
+//
+// For most uses prefer the f.SyscallConn method.
+func (f *File) Fd() uintptr {
+	return f.fd()
+}
+
 // DirFS returns a file system (an fs.FS) for the tree of files rooted at the directory dir.
 //
 // Note that DirFS("/prefix") only guarantees that the Open calls it makes to the
@@ -687,13 +713,20 @@ func (f *File) SyscallConn() (syscall.RawConn, error) {
 // a general substitute for a chroot-style security mechanism when the directory tree
 // contains arbitrary content.
 //
+// Use [Root.FS] to obtain a fs.FS that prevents escapes from the tree via symbolic links.
+//
 // The directory dir must not be "".
 //
-// The result implements [io/fs.StatFS], [io/fs.ReadFileFS] and
-// [io/fs.ReadDirFS].
+// The result implements [io/fs.StatFS], [io/fs.ReadFileFS], [io/fs.ReadDirFS], and
+// [io/fs.ReadLinkFS].
 func DirFS(dir string) fs.FS {
 	return dirFS(dir)
 }
+
+var _ fs.StatFS = dirFS("")
+var _ fs.ReadFileFS = dirFS("")
+var _ fs.ReadDirFS = dirFS("")
+var _ fs.ReadLinkFS = dirFS("")
 
 type dirFS string
 
@@ -766,6 +799,28 @@ func (dir dirFS) Stat(name string) (fs.FileInfo, error) {
 	return f, nil
 }
 
+func (dir dirFS) Lstat(name string) (fs.FileInfo, error) {
+	fullname, err := dir.join(name)
+	if err != nil {
+		return nil, &PathError{Op: "lstat", Path: name, Err: err}
+	}
+	f, err := Lstat(fullname)
+	if err != nil {
+		// See comment in dirFS.Open.
+		err.(*PathError).Path = name
+		return nil, err
+	}
+	return f, nil
+}
+
+func (dir dirFS) ReadLink(name string) (string, error) {
+	fullname, err := dir.join(name)
+	if err != nil {
+		return "", &PathError{Op: "readlink", Path: name, Err: err}
+	}
+	return Readlink(fullname)
+}
+
 // join returns the path for name in dir.
 func (dir dirFS) join(name string) (string, error) {
 	if dir == "" {
@@ -791,7 +846,10 @@ func ReadFile(name string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return readFileContents(f)
+}
 
+func readFileContents(f *File) ([]byte, error) {
 	var size int
 	if info, err := f.Stat(); err == nil {
 		size64 := info.Size()

@@ -8,37 +8,95 @@ package maps
 
 import (
 	"internal/abi"
+	"internal/goarch"
 	"internal/race"
 	"internal/runtime/sys"
 	"unsafe"
 )
 
-// TODO: more string-specific optimizations possible.
-
-func (m *Map) getWithoutKeySmallFastStr(typ *abi.SwissMapType, hash uintptr, key string) (unsafe.Pointer, bool) {
+func (m *Map) getWithoutKeySmallFastStr(typ *abi.SwissMapType, key string) unsafe.Pointer {
 	g := groupReference{
 		data: m.dirPtr,
 	}
 
-	h2 := uint8(h2(hash))
 	ctrls := *g.ctrls()
+	slotKey := g.key(typ, 0)
+	slotSize := typ.SlotSize
 
-	for i := uintptr(0); i < abi.SwissMapGroupSlots; i++ {
-		c := uint8(ctrls)
-		ctrls >>= 8
-		if c != h2 {
-			continue
+	// The 64 threshold was chosen based on performance of BenchmarkMapStringKeysEight,
+	// where there are 8 keys to check, all of which don't quick-match the lookup key.
+	// In that case, we can save hashing the lookup key. That savings is worth this extra code
+	// for strings that are long enough that hashing is expensive.
+	if len(key) > 64 {
+		// String hashing and equality might be expensive. Do a quick check first.
+		j := abi.SwissMapGroupSlots
+		for i := range abi.SwissMapGroupSlots {
+			if ctrls&(1<<7) == 0 && longStringQuickEqualityTest(key, *(*string)(slotKey)) {
+				if j < abi.SwissMapGroupSlots {
+					// 2 strings both passed the quick equality test.
+					// Break out of this loop and do it the slow way.
+					goto dohash
+				}
+				j = i
+			}
+			slotKey = unsafe.Pointer(uintptr(slotKey) + slotSize)
+			ctrls >>= 8
 		}
-
-		slotKey := g.key(typ, i)
-
+		if j == abi.SwissMapGroupSlots {
+			// No slot passed the quick test.
+			return nil
+		}
+		// There's exactly one slot that passed the quick test. Do the single expensive comparison.
+		slotKey = g.key(typ, uintptr(j))
 		if key == *(*string)(slotKey) {
-			slotElem := g.elem(typ, i)
-			return slotElem, true
+			return unsafe.Pointer(uintptr(slotKey) + 2*goarch.PtrSize)
 		}
+		return nil
 	}
 
-	return nil, false
+dohash:
+	// This path will cost 1 hash and 1+ε comparisons.
+	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&key)), m.seed)
+	h2 := uint8(h2(hash))
+	ctrls = *g.ctrls()
+	slotKey = g.key(typ, 0)
+
+	for range abi.SwissMapGroupSlots {
+		if uint8(ctrls) == h2 && key == *(*string)(slotKey) {
+			return unsafe.Pointer(uintptr(slotKey) + 2*goarch.PtrSize)
+		}
+		slotKey = unsafe.Pointer(uintptr(slotKey) + slotSize)
+		ctrls >>= 8
+	}
+	return nil
+}
+
+// Returns true if a and b might be equal.
+// Returns false if a and b are definitely not equal.
+// Requires len(a)>=8.
+func longStringQuickEqualityTest(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	x, y := stringPtr(a), stringPtr(b)
+	// Check first 8 bytes.
+	if *(*[8]byte)(x) != *(*[8]byte)(y) {
+		return false
+	}
+	// Check last 8 bytes.
+	x = unsafe.Pointer(uintptr(x) + uintptr(len(a)) - 8)
+	y = unsafe.Pointer(uintptr(y) + uintptr(len(a)) - 8)
+	if *(*[8]byte)(x) != *(*[8]byte)(y) {
+		return false
+	}
+	return true
+}
+func stringPtr(s string) unsafe.Pointer {
+	type stringStruct struct {
+		ptr unsafe.Pointer
+		len int
+	}
+	return (*stringStruct)(unsafe.Pointer(&s)).ptr
 }
 
 //go:linkname runtime_mapaccess1_faststr runtime.mapaccess1_faststr
@@ -55,17 +113,19 @@ func runtime_mapaccess1_faststr(typ *abi.SwissMapType, m *Map, key string) unsaf
 
 	if m.writing != 0 {
 		fatal("concurrent map read and map write")
+		return nil
 	}
 
-	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&key)), m.seed)
-
 	if m.dirLen <= 0 {
-		elem, ok := m.getWithoutKeySmallFastStr(typ, hash, key)
-		if !ok {
+		elem := m.getWithoutKeySmallFastStr(typ, key)
+		if elem == nil {
 			return unsafe.Pointer(&zeroVal[0])
 		}
 		return elem
 	}
+
+	k := key
+	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&k)), m.seed)
 
 	// Select table.
 	idx := m.directoryIndex(hash)
@@ -83,7 +143,7 @@ func runtime_mapaccess1_faststr(typ *abi.SwissMapType, m *Map, key string) unsaf
 
 			slotKey := g.key(typ, i)
 			if key == *(*string)(slotKey) {
-				slotElem := g.elem(typ, i)
+				slotElem := unsafe.Pointer(uintptr(slotKey) + 2*goarch.PtrSize)
 				return slotElem
 			}
 			match = match.removeFirst()
@@ -112,17 +172,19 @@ func runtime_mapaccess2_faststr(typ *abi.SwissMapType, m *Map, key string) (unsa
 
 	if m.writing != 0 {
 		fatal("concurrent map read and map write")
+		return nil, false
 	}
 
-	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&key)), m.seed)
-
 	if m.dirLen <= 0 {
-		elem, ok := m.getWithoutKeySmallFastStr(typ, hash, key)
-		if !ok {
+		elem := m.getWithoutKeySmallFastStr(typ, key)
+		if elem == nil {
 			return unsafe.Pointer(&zeroVal[0]), false
 		}
 		return elem, true
 	}
+
+	k := key
+	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&k)), m.seed)
 
 	// Select table.
 	idx := m.directoryIndex(hash)
@@ -140,7 +202,7 @@ func runtime_mapaccess2_faststr(typ *abi.SwissMapType, m *Map, key string) (unsa
 
 			slotKey := g.key(typ, i)
 			if key == *(*string)(slotKey) {
-				slotElem := g.elem(typ, i)
+				slotElem := unsafe.Pointer(uintptr(slotKey) + 2*goarch.PtrSize)
 				return slotElem, true
 			}
 			match = match.removeFirst()
@@ -176,9 +238,10 @@ func (m *Map) putSlotSmallFastStr(typ *abi.SwissMapType, hash uintptr, key strin
 		match = match.removeFirst()
 	}
 
-	// No need to look for deleted slots, small maps can't have them (see
-	// deleteSmall).
-	match = g.ctrls().matchEmpty()
+	// There can't be deleted slots, small maps can't have them
+	// (see deleteSmall). Use matchEmptyOrDeleted as it is a bit
+	// more efficient than matchEmpty.
+	match = g.ctrls().matchEmptyOrDeleted()
 	if match == 0 {
 		fatal("small map with no empty slot (concurrent map writes?)")
 	}
@@ -210,7 +273,8 @@ func runtime_mapassign_faststr(typ *abi.SwissMapType, m *Map, key string) unsafe
 		fatal("concurrent map writes")
 	}
 
-	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&key)), m.seed)
+	k := key
+	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&k)), m.seed)
 
 	// Set writing after calling Hasher, since Hasher may panic, in which
 	// case we have not actually done a write.
@@ -274,58 +338,49 @@ outer:
 
 			// No existing slot for this key in this group. Is this the end
 			// of the probe sequence?
-			match = g.ctrls().matchEmpty()
-			if match != 0 {
-				// Finding an empty slot means we've reached the end of
-				// the probe sequence.
-
-				var i uintptr
-
-				// If we found a deleted slot along the way, we
-				// can replace it without consuming growthLeft.
-				if firstDeletedGroup.data != nil {
-					g = firstDeletedGroup
-					i = firstDeletedSlot
-					t.growthLeft++ // will be decremented below to become a no-op.
-				} else {
-					// Otherwise, use the empty slot.
-					i = match.first()
-				}
-
-				// If there is room left to grow, just insert the new entry.
-				if t.growthLeft > 0 {
-					slotKey := g.key(typ, i)
-					*(*string)(slotKey) = key
-
-					slotElem = g.elem(typ, i)
-
-					g.ctrls().set(i, ctrl(h2(hash)))
-					t.growthLeft--
-					t.used++
-					m.used++
-
-					t.checkInvariants(typ, m)
-					break outer
-				}
-
-				t.rehash(typ, m)
-				continue outer
+			match = g.ctrls().matchEmptyOrDeleted()
+			if match == 0 {
+				continue // nothing but filled slots. Keep probing.
 			}
-
-			// No empty slots in this group. Check for a deleted
-			// slot, which we'll use if we don't find a match later
-			// in the probe sequence.
-			//
-			// We only need to remember a single deleted slot.
-			if firstDeletedGroup.data == nil {
-				// Since we already checked for empty slots
-				// above, matches here must be deleted slots.
-				match = g.ctrls().matchEmptyOrDeleted()
-				if match != 0 {
+			i := match.first()
+			if g.ctrls().get(i) == ctrlDeleted {
+				// There are some deleted slots. Remember
+				// the first one, and keep probing.
+				if firstDeletedGroup.data == nil {
 					firstDeletedGroup = g
-					firstDeletedSlot = match.first()
+					firstDeletedSlot = i
 				}
+				continue
 			}
+			// We've found an empty slot, which means we've reached the end of
+			// the probe sequence.
+
+			// If we found a deleted slot along the way, we can
+			// replace it without consuming growthLeft.
+			if firstDeletedGroup.data != nil {
+				g = firstDeletedGroup
+				i = firstDeletedSlot
+				t.growthLeft++ // will be decremented below to become a no-op.
+			}
+
+			// If there is room left to grow, just insert the new entry.
+			if t.growthLeft > 0 {
+				slotKey := g.key(typ, i)
+				*(*string)(slotKey) = key
+
+				slotElem = g.elem(typ, i)
+
+				g.ctrls().set(i, ctrl(h2(hash)))
+				t.growthLeft--
+				t.used++
+				m.used++
+
+				t.checkInvariants(typ, m)
+				break outer
+			}
+
+			t.rehash(typ, m)
+			continue outer
 		}
 	}
 
