@@ -7,6 +7,7 @@ package load
 
 import (
 	"bytes"
+	"cmd/internal/objabi"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"go/build"
 	"go/scanner"
 	"go/token"
+	"internal/godebug"
 	"internal/platform"
 	"io/fs"
 	"os"
@@ -2110,6 +2112,8 @@ func ResolveEmbed(dir string, patterns []string) ([]string, error) {
 	return files, err
 }
 
+var embedfollowsymlinks = godebug.New("embedfollowsymlinks")
+
 // resolveEmbed resolves //go:embed patterns to precise file lists.
 // It sets files to the list of unique files matched (for go list),
 // and it sets pmap to the more precise mapping from
@@ -2194,6 +2198,24 @@ func resolveEmbed(pkgdir string, patterns []string) (files []string, pmap map[st
 					list = append(list, rel)
 				}
 
+			// If the embedfollowsymlinks GODEBUG is set to 1, allow the leaf file to be a
+			// symlink (#59924). We don't allow directories to be symlinks and have already
+			// checked that none of the parent directories of the file are symlinks in the
+			// loop above. The file pointed to by the symlink must be a regular file.
+			case embedfollowsymlinks.Value() == "1" && info.Mode()&fs.ModeType == fs.ModeSymlink:
+				info, err := fsys.Stat(file)
+				if err != nil {
+					return nil, nil, err
+				}
+				if !info.Mode().IsRegular() {
+					return nil, nil, fmt.Errorf("cannot embed irregular file %s", rel)
+				}
+				if have[rel] != pid {
+					embedfollowsymlinks.IncNonDefault()
+					have[rel] = pid
+					list = append(list, rel)
+				}
+
 			case info.IsDir():
 				// Gather all files in the named directory, stopping at module boundaries
 				// and ignoring files that wouldn't be packaged into a module.
@@ -2205,11 +2227,19 @@ func resolveEmbed(pkgdir string, patterns []string) (files []string, pmap map[st
 					rel := filepath.ToSlash(str.TrimFilePathPrefix(path, pkgdir))
 					name := d.Name()
 					if path != file && (isBadEmbedName(name) || ((name[0] == '.' || name[0] == '_') && !all)) {
-						// Ignore bad names, assuming they won't go into modules.
-						// Also avoid hidden files that user may not know about.
+						// Avoid hidden files that user may not know about.
 						// See golang.org/issue/42328.
 						if d.IsDir() {
 							return fs.SkipDir
+						}
+						// Ignore hidden files.
+						if name[0] == '.' || name[0] == '_' {
+							return nil
+						}
+						// Error on bad embed names.
+						// See golang.org/issue/54003.
+						if isBadEmbedName(name) {
+							return fmt.Errorf("cannot embed file %s: invalid name %s", rel, name)
 						}
 						return nil
 					}
@@ -2466,7 +2496,6 @@ func (p *Package) setBuildInfo(ctx context.Context, autoVCS bool) {
 	var repoDir string
 	var vcsCmd *vcs.Cmd
 	var err error
-	const allowNesting = true
 
 	wantVCS := false
 	switch cfg.BuildBuildvcs {
@@ -2486,7 +2515,7 @@ func (p *Package) setBuildInfo(ctx context.Context, autoVCS bool) {
 			// (so the bootstrap toolchain packages don't even appear to be in GOROOT).
 			goto omitVCS
 		}
-		repoDir, vcsCmd, err = vcs.FromDir(base.Cwd(), "", allowNesting)
+		repoDir, vcsCmd, err = vcs.FromDir(base.Cwd(), "")
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			setVCSError(err)
 			return
@@ -2509,10 +2538,11 @@ func (p *Package) setBuildInfo(ctx context.Context, autoVCS bool) {
 	}
 	if repoDir != "" && vcsCmd.Status != nil {
 		// Check that the current directory, package, and module are in the same
-		// repository. vcs.FromDir allows nested Git repositories, but nesting
-		// is not allowed for other VCS tools. The current directory may be outside
-		// p.Module.Dir when a workspace is used.
-		pkgRepoDir, _, err := vcs.FromDir(p.Dir, "", allowNesting)
+		// repository. vcs.FromDir disallows nested VCS and multiple VCS in the
+		// same repository, unless the GODEBUG allowmultiplevcs is set. The
+		// current directory may be outside p.Module.Dir when a workspace is
+		// used.
+		pkgRepoDir, _, err := vcs.FromDir(p.Dir, "")
 		if err != nil {
 			setVCSError(err)
 			return
@@ -2524,7 +2554,7 @@ func (p *Package) setBuildInfo(ctx context.Context, autoVCS bool) {
 			}
 			goto omitVCS
 		}
-		modRepoDir, _, err := vcs.FromDir(p.Module.Dir, "", allowNesting)
+		modRepoDir, _, err := vcs.FromDir(p.Module.Dir, "")
 		if err != nil {
 			setVCSError(err)
 			return
@@ -2555,7 +2585,16 @@ func (p *Package) setBuildInfo(ctx context.Context, autoVCS bool) {
 		}
 		appendSetting("vcs.modified", strconv.FormatBool(st.Uncommitted))
 		// Determine the correct version of this module at the current revision and update the build metadata accordingly.
-		repo := modfetch.LookupLocal(ctx, repoDir)
+		rootModPath := goModPath(repoDir)
+		// If no root module is found, skip embedding VCS data since we cannot determine the module path of the root.
+		if rootModPath == "" {
+			goto omitVCS
+		}
+		codeRoot, _, ok := module.SplitPathVersion(rootModPath)
+		if !ok {
+			goto omitVCS
+		}
+		repo := modfetch.LookupLocal(ctx, codeRoot, p.Module.Path, repoDir)
 		revInfo, err := repo.Stat(ctx, st.Revision)
 		if err != nil {
 			goto omitVCS
@@ -2563,7 +2602,12 @@ func (p *Package) setBuildInfo(ctx context.Context, autoVCS bool) {
 		vers := revInfo.Version
 		if vers != "" {
 			if st.Uncommitted {
-				vers += "+dirty"
+				// SemVer build metadata is dot-separated https://semver.org/#spec-item-10
+				if strings.HasSuffix(vers, "+incompatible") {
+					vers += ".dirty"
+				} else {
+					vers += "+dirty"
+				}
 			}
 			info.Main.Version = vers
 		}
@@ -2883,8 +2927,7 @@ func PackagesAndErrors(ctx context.Context, opts PackageOpts, patterns []string)
 		}
 		matches, _ = modload.LoadPackages(ctx, modOpts, patterns...)
 	} else {
-		noModRoots := []string{}
-		matches = search.ImportPaths(patterns, noModRoots)
+		matches = search.ImportPaths(patterns)
 	}
 
 	var (
@@ -3345,6 +3388,7 @@ func PackagesAndErrorsOutsideModule(ctx context.Context, opts PackageOpts, args 
 			patterns[i] = p
 		}
 	}
+	patterns = search.CleanPatterns(patterns)
 
 	// Query the module providing the first argument, load its go.mod file, and
 	// check that it doesn't contain directives that would cause it to be
@@ -3540,7 +3584,7 @@ func SelectCoverPackages(roots []*Package, match []func(*Package) bool, op strin
 		// $GOROOT/src/internal/coverage/pkid.go dealing with
 		// hard-coding of runtime package IDs.
 		cmode := cfg.BuildCoverMode
-		if cfg.BuildRace && p.Standard && (p.ImportPath == "runtime" || strings.HasPrefix(p.ImportPath, "runtime/internal")) {
+		if cfg.BuildRace && p.Standard && objabi.LookupPkgSpecial(p.ImportPath).Runtime {
 			cmode = "regonly"
 		}
 

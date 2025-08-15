@@ -11,7 +11,6 @@ import (
 	"cmd/compile/internal/syntax"
 	"errors"
 	"fmt"
-	"internal/buildcfg"
 	. "internal/types/errors"
 )
 
@@ -130,10 +129,6 @@ func (check *Checker) instance(pos syntax.Pos, orig genericType, targs []Type, e
 		res = check.newNamedInstance(pos, orig, targs, expanding) // substituted lazily
 
 	case *Alias:
-		if !buildcfg.Experiment.AliasTypeParams {
-			assert(expanding == nil) // Alias instances cannot be reached from Named types
-		}
-
 		// verify type parameter count (see go.dev/issue/71198 for a test case)
 		tparams := orig.TypeParams()
 		if !check.validateTArgLen(pos, orig.obj.Name(), tparams.Len(), len(targs)) {
@@ -296,12 +291,12 @@ func (check *Checker) implements(V, T Type, constraint bool, cause *string) bool
 		}
 		// If T is comparable, V must be comparable.
 		// If V is strictly comparable, we're done.
-		if comparableType(V, false /* strict comparability */, nil, nil) {
+		if comparableType(V, false /* strict comparability */, nil) == nil {
 			return true
 		}
 		// For constraint satisfaction, use dynamic (spec) comparability
 		// so that ordinary, non-type parameter interfaces implement comparable.
-		if constraint && comparableType(V, true /* spec comparability */, nil, nil) {
+		if constraint && comparableType(V, true /* spec comparability */, nil) == nil {
 			// V is comparable if we are at Go 1.20 or higher.
 			if check == nil || check.allowVersion(go1_20) {
 				return true

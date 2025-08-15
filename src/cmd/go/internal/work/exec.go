@@ -2587,7 +2587,8 @@ func (b *Builder) gccArchArgs() []string {
 	case "arm":
 		return []string{"-marm"} // not thumb
 	case "s390x":
-		return []string{"-m64", "-march=z196"}
+		// minimum supported s390x version on Go is z13
+		return []string{"-m64", "-march=z13"}
 	case "mips64", "mips64le":
 		args := []string{"-mabi=64"}
 		if cfg.GOMIPS64 == "hardfloat" {
@@ -2758,6 +2759,7 @@ func (b *Builder) cgo(a *Action, cgoExe, objdir string, pcCFLAGS, pcLDFLAGS, cgo
 	// consists of the original $CGO_LDFLAGS (unchecked) and all the
 	// flags put together from source code (checked).
 	cgoenv := b.cCompilerEnv()
+	cgoenv = append(cgoenv, cfgChangedEnv...)
 	var ldflagsOption []string
 	if len(cgoLDFLAGS) > 0 {
 		flags := make([]string, len(cgoLDFLAGS))

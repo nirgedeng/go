@@ -32,7 +32,10 @@ type pairableLoadInfo struct {
 // They must also take an offset in Aux/AuxInt.
 var pairableLoads = map[Op]pairableLoadInfo{
 	OpARM64MOVDload:  {8, OpARM64LDP},
-	OpARM64MOVWload:  {4, OpARM64LDPW},
+	OpARM64MOVWUload: {4, OpARM64LDPW},
+	OpARM64MOVWload:  {4, OpARM64LDPSW},
+	// TODO: conceivably we could pair a signed and unsigned load
+	// if we knew the upper bits of one of them weren't being used.
 	OpARM64FMOVDload: {8, OpARM64FLDPD},
 	OpARM64FMOVSload: {4, OpARM64FLDPS},
 }
@@ -50,7 +53,6 @@ var pairableStores = map[Op]pairableStoreInfo{
 	OpARM64MOVWstore:  {4, OpARM64STPW},
 	OpARM64FMOVDstore: {8, OpARM64FSTPD},
 	OpARM64FMOVSstore: {4, OpARM64FSTPS},
-	// TODO: storezero variants.
 }
 
 // offsetOk returns true if a pair instruction should be used
@@ -318,13 +320,13 @@ func pairStores(f *Func) {
 				// we'll be moving.
 				var width int64
 				switch w.Op {
-				case OpARM64MOVDstore, OpARM64MOVDstorezero, OpARM64FMOVDstore:
+				case OpARM64MOVDstore, OpARM64FMOVDstore:
 					width = 8
-				case OpARM64MOVWstore, OpARM64MOVWstorezero, OpARM64FMOVSstore:
+				case OpARM64MOVWstore, OpARM64FMOVSstore:
 					width = 4
-				case OpARM64MOVHstore, OpARM64MOVHstorezero:
+				case OpARM64MOVHstore:
 					width = 2
-				case OpARM64MOVBstore, OpARM64MOVBstorezero:
+				case OpARM64MOVBstore:
 					width = 1
 				case OpCopy:
 					continue // this was a store we merged earlier

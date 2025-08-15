@@ -178,7 +178,7 @@ func (t *tester) run() {
 			// otherwise relevant to the actual set of packages under test.
 			goInstall(toolenv(), gorootBinGo, toolchain...)
 			goInstall(toolenv(), gorootBinGo, toolchain...)
-			goInstall(toolenv(), gorootBinGo, "cmd")
+			goInstall(toolenv(), gorootBinGo, toolsToInstall...)
 		}
 	}
 
@@ -336,6 +336,10 @@ type goTest struct {
 	// omitVariant indicates that variant is used solely for the dist test name and
 	// that the set of test names run by each variant (including empty) of a package
 	// is non-overlapping.
+	//
+	// TODO(mknyszek): Consider removing omitVariant as it is no longer set to true
+	// by any test. It's too valuable to have timing information in ResultDB that
+	// corresponds directly with dist names for tests.
 	omitVariant bool
 
 	// We have both pkg and pkgs as a convenience. Both may be set, in which
@@ -595,8 +599,11 @@ func (t *tester) registerRaceBenchTest(pkg string) {
 		defer timelog("end", dt.name)
 		ranGoBench = true
 		return (&goTest{
-			variant:     "racebench",
-			omitVariant: true,               // The only execution of benchmarks in dist; benchmark names are guaranteed not to overlap with test names.
+			variant: "racebench",
+			// Include the variant even though there's no overlap in test names.
+			// This makes the test targets distinct, allowing our build system to record
+			// elapsed time for each one, which is useful for load-balancing test shards.
+			omitVariant: false,
 			timeout:     1200 * time.Second, // longer timeout for race with benchmarks
 			race:        true,
 			bench:       true,
@@ -734,6 +741,15 @@ func (t *tester) registerTests() {
 				env:      []string{"GOFIPS140=" + version, "GOMODCACHE=" + filepath.Join(workdir, "fips-"+version)},
 			})
 		}
+	}
+
+	// Test GOEXPERIMENT=jsonv2.
+	if !strings.Contains(goexperiment, "jsonv2") {
+		t.registerTest("GOEXPERIMENT=jsonv2 go test encoding/json/...", &goTest{
+			variant: "jsonv2",
+			env:     []string{"GOEXPERIMENT=jsonv2"},
+			pkg:     "encoding/json/...",
+		})
 	}
 
 	// Test ios/amd64 for the iOS simulator.
@@ -926,7 +942,7 @@ func (t *tester) registerTests() {
 		t.registerTest("wasip1 host tests",
 			&goTest{
 				variant:   "host",
-				pkg:       "runtime/internal/wasitest",
+				pkg:       "internal/runtime/wasitest",
 				timeout:   1 * time.Minute,
 				runOnHost: true,
 			})
@@ -952,6 +968,7 @@ func (t *tester) registerTests() {
 					variant:   "cpu" + strconv.Itoa(i),
 					timeout:   300 * time.Second,
 					cpu:       strconv.Itoa(i),
+					gcflags:   gogcflags,
 					short:     true,
 					testFlags: []string{"-quick"},
 					// We set GOMAXPROCS=2 in addition to -cpu=1,2,4 in order to test runtime bootstrap code,
@@ -982,8 +999,11 @@ func (t *tester) registerTests() {
 			id := fmt.Sprintf("%d_%d", shard, nShards)
 			t.registerTest("../test",
 				&goTest{
-					variant:     id,
-					omitVariant: true, // Shards of the same Go package; tests are guaranteed not to overlap.
+					variant: id,
+					// Include the variant even though there's no overlap in test names.
+					// This makes the test target more clearly distinct in our build
+					// results and is important for load-balancing test shards.
+					omitVariant: false,
 					pkg:         "cmd/internal/testdir",
 					testFlags:   []string{fmt.Sprintf("-shard=%d", shard), fmt.Sprintf("-shards=%d", nShards)},
 					runOnHost:   true,
@@ -1098,7 +1118,7 @@ func (t *tester) dirCmd(dir string, cmdline ...interface{}) *exec.Cmd {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if vflag > 1 {
-		errprintf("%s\n", strings.Join(cmd.Args, " "))
+		errprintf("%#q\n", cmd)
 	}
 	return cmd
 }
@@ -1168,7 +1188,7 @@ func (t *tester) internalLink() bool {
 	// Internally linking cgo is incomplete on some architectures.
 	// https://golang.org/issue/10373
 	// https://golang.org/issue/14449
-	if goarch == "loong64" || goarch == "mips64" || goarch == "mips64le" || goarch == "mips" || goarch == "mipsle" || goarch == "riscv64" {
+	if goarch == "mips64" || goarch == "mips64le" || goarch == "mips" || goarch == "mipsle" || goarch == "riscv64" {
 		return false
 	}
 	if goos == "aix" {
@@ -1189,7 +1209,7 @@ func (t *tester) internalLinkPIE() bool {
 	}
 	switch goos + "-" + goarch {
 	case "darwin-amd64", "darwin-arm64",
-		"linux-amd64", "linux-arm64", "linux-ppc64le",
+		"linux-amd64", "linux-arm64", "linux-loong64", "linux-ppc64le",
 		"android-arm64",
 		"windows-amd64", "windows-386", "windows-arm":
 		return true
@@ -1450,7 +1470,7 @@ func (t *tester) runPending(nextTest *distTest) {
 			}
 		}
 		if vflag > 1 {
-			errprintf("%s\n", strings.Join(w.cmd.Args, " "))
+			errprintf("%#q\n", w.cmd)
 		}
 		ended++
 		<-w.end
@@ -1678,7 +1698,7 @@ func (t *tester) makeGOROOTUnwritable() (undo func()) {
 func raceDetectorSupported(goos, goarch string) bool {
 	switch goos {
 	case "linux":
-		return goarch == "amd64" || goarch == "ppc64le" || goarch == "arm64" || goarch == "s390x"
+		return goarch == "amd64" || goarch == "ppc64le" || goarch == "arm64" || goarch == "s390x" || goarch == "loong64"
 	case "darwin":
 		return goarch == "amd64" || goarch == "arm64"
 	case "freebsd", "netbsd", "windows":
@@ -1767,7 +1787,7 @@ func buildModeSupported(compiler, buildmode, goos, goarch string) bool {
 
 	case "plugin":
 		switch platform {
-		case "linux/amd64", "linux/arm", "linux/arm64", "linux/386", "linux/loong64", "linux/s390x", "linux/ppc64le",
+		case "linux/amd64", "linux/arm", "linux/arm64", "linux/386", "linux/loong64", "linux/riscv64", "linux/s390x", "linux/ppc64le",
 			"android/amd64", "android/386",
 			"darwin/amd64", "darwin/arm64",
 			"freebsd/amd64":

@@ -54,7 +54,7 @@ func rename(oldname, newname string) error {
 
 // file is the real representation of *File.
 // The extra level of indirection ensures that no clients of os
-// can overwrite this data, which could cause the cleanup
+// can overwrite this data, which could cause the finalizer
 // to close the wrong file descriptor.
 type file struct {
 	pfd         poll.FD
@@ -63,7 +63,6 @@ type file struct {
 	nonblock    bool                    // whether we set nonblocking mode
 	stdoutOrErr bool                    // whether this is stdout or stderr
 	appendMode  bool                    // whether file is opened for appending
-	cleanup     runtime.Cleanup         // cleanup closes the file when no longer referenced
 }
 
 // fd is the Unix implementation of Fd.
@@ -84,16 +83,8 @@ func (f *File) fd() uintptr {
 	return uintptr(f.pfd.Sysfd)
 }
 
-// NewFile returns a new File with the given file descriptor and
-// name. The returned value will be nil if fd is not a valid file
-// descriptor. On Unix systems, if the file descriptor is in
-// non-blocking mode, NewFile will attempt to return a pollable File
-// (one for which the SetDeadline methods work).
-//
-// After passing it to NewFile, fd may become invalid under the same
-// conditions described in the comments of the Fd method, and the same
-// constraints apply.
-func NewFile(fd uintptr, name string) *File {
+// newFileFromNewFile is called by [NewFile].
+func newFileFromNewFile(fd uintptr, name string) *File {
 	fdi := int(fd)
 	if fdi < 0 {
 		return nil
@@ -230,8 +221,7 @@ func newFile(fd int, name string, kind newFileKind, nonBlocking bool) *File {
 		}
 	}
 
-	// Close the file when the File is not live.
-	f.cleanup = runtime.AddCleanup(f, func(f *file) { f.close() }, f.file)
+	runtime.SetFinalizer(f.file, (*file).close)
 	return f
 }
 
@@ -328,9 +318,8 @@ func (file *file) close() error {
 		err = &PathError{Op: "close", Path: file.name, Err: e}
 	}
 
-	// There is no need for a cleanup at this point. File must be alive at the point
-	// where cleanup.stop is called.
-	file.cleanup.Stop()
+	// no need for a finalizer anymore
+	runtime.SetFinalizer(file, nil)
 	return err
 }
 
@@ -351,7 +340,7 @@ func (f *File) seek(offset int64, whence int) (ret int64, err error) {
 
 // Truncate changes the size of the named file.
 // If the file is a symbolic link, it changes the size of the link's target.
-// If there is an error, it will be of type *PathError.
+// If there is an error, it will be of type [*PathError].
 func Truncate(name string, size int64) error {
 	e := ignoringEINTR(func() error {
 		return syscall.Truncate(name, size)
@@ -363,7 +352,7 @@ func Truncate(name string, size int64) error {
 }
 
 // Remove removes the named file or (empty) directory.
-// If there is an error, it will be of type *PathError.
+// If there is an error, it will be of type [*PathError].
 func Remove(name string) error {
 	// System call interface forces us to know
 	// whether name is a file or directory.
@@ -482,7 +471,7 @@ func newUnixDirent(parent, name string, typ FileMode) (DirEntry, error) {
 		name:   name,
 		typ:    typ,
 	}
-	if typ != ^FileMode(0) && !testingForceReadDirLstat {
+	if typ != ^FileMode(0) {
 		return ude, nil
 	}
 

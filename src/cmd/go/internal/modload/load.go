@@ -323,6 +323,13 @@ func LoadPackages(ctx context.Context, opts PackageOpts, patterns ...string) (ma
 				}
 				matchPackages(ctx, m, opts.Tags, includeStd, mg.BuildList())
 
+			case m.Pattern() == "work":
+				matchModules := MainModules.Versions()
+				if opts.MainModule != (module.Version{}) {
+					matchModules = []module.Version{opts.MainModule}
+				}
+				matchPackages(ctx, m, opts.Tags, omitStd, matchModules)
+
 			case m.Pattern() == "all":
 				if ld == nil {
 					// The initial roots are the packages and tools in the main module.
@@ -2002,6 +2009,13 @@ func (ld *loader) stdVendor(parentPath, path string) string {
 // starting with a list of the import paths for the packages in the main module.
 func (ld *loader) computePatternAll() (all []string) {
 	for _, pkg := range ld.pkgs {
+		if module.CheckImportPath(pkg.path) != nil {
+			// Don't add packages with invalid paths. This means that
+			// we don't try to load invalid imports of the main modules'
+			// packages. We will still report an errors invalid imports
+			// when we load the importing package.
+			continue
+		}
 		if pkg.flags.has(pkgInAll) && !pkg.isTest() {
 			all = append(all, pkg.path)
 		}
@@ -2079,8 +2093,7 @@ func (ld *loader) checkTidyCompatibility(ctx context.Context, rs *Requirements, 
 
 		fmt.Fprintf(os.Stderr, "If reproducibility with go %s is not needed:\n\tgo mod tidy%s -compat=%s\n", compatVersion, goFlag, goVersion)
 
-		// TODO(#46141): Populate the linked wiki page.
-		fmt.Fprintf(os.Stderr, "For other options, see:\n\thttps://golang.org/doc/modules/pruning\n")
+		fmt.Fprintf(os.Stderr, "For information about 'go mod tidy' compatibility, see:\n\thttps://go.dev/ref/mod#graph-pruning\n")
 	}
 
 	mg, err := rs.Graph(ctx)

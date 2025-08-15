@@ -95,7 +95,7 @@ func plugin_lastmoduleinit(hashchecker func(modulename, linktimehash, runtimehas
 		(*valp)[0] = unsafe.Pointer(t)
 
 		name := symName.Name()
-		if t.Kind_&abi.KindMask == abi.Func {
+		if t.Kind() == abi.Func {
 			name = "." + name
 		}
 		syms[name] = val
