@@ -77,11 +77,17 @@ type Plugin struct {
 	syms       map[string]any
 }
 
+type HashCheckerFunc func(modulename, linktimehash, runtimehash string) bool
+
 // Open opens a Go plugin.
 // If a path has already been opened, then the existing *[Plugin] is returned.
 // It is safe for concurrent use by multiple goroutines.
 func Open(path string) (*Plugin, error) {
-	return open(path)
+	return open(path, nil)
+}
+
+func Load(path string, hashchecker HashCheckerFunc) (*Plugin, error) {
+	return open(path, hashchecker)
 }
 
 // Lookup searches for a symbol named symName in plugin p.
